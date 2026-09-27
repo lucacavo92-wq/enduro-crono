@@ -23,6 +23,10 @@ Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 Push su `main` → GitHub Pages pubblica da sola in ~1 minuto (repo `lucacavo92-wq/enduro-crono`, sorgente: branch `main`, cartella root).
 Luca aggiorna l'app chiudendola e riaprendola (a volte due volte).
 
+PC Windows di Luca: git e python non sono nel PATH della shell di Claude, usare i percorsi completi
+`C:\Program Files\Git\cmd\git.exe` e `%LOCALAPPDATA%\Programs\Python\Python312\python.exe` (Playwright + Chromium già installati).
+Accesso GitHub già salvato in Git Credential Manager (metodo "device code"): `git push` funziona senza chiedere nulla.
+
 ## Test
 ```
 python3 -m http.server 8765 &
