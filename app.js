@@ -194,19 +194,154 @@ function viewHome() {
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
 }
 
+/* ---------- RICONOSCIMENTO PISTA (GPS + OpenStreetMap) ---------- */
+
+const TRACK_RADIUS_M = 2000;   // piste ufficiali entro 2 km: copre errore GPS, paddock e parcheggi
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+];
+
+function fetchTimeout(url, opts = {}, ms = 12000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctl.signal }).finally(() => clearTimeout(t));
+}
+
+async function findOfficialTracks(lat, lon) {
+  const q = `[out:json][timeout:15];(` +
+    `nwr(around:${TRACK_RADIUS_M},${lat},${lon})["sport"~"motocross|enduro|trial|supermoto|motor",i];` +
+    `nwr(around:${TRACK_RADIUS_M},${lat},${lon})["highway"="raceway"]["sport"!~"karting|cycling|bmx|running|horse",i];` +
+    `);out center tags;`;
+  let lastErr;
+  for (const url of OVERPASS) {
+    try {
+      const r = await fetchTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'data=' + encodeURIComponent(q)
+      });
+      const txt = await r.text();
+      if (!r.ok || txt[0] !== '{') throw new Error('overpass ' + r.status);
+      return JSON.parse(txt).elements.map(e => {
+        const p = { lat: e.lat ?? e.center?.lat, lon: e.lon ?? e.center?.lon };
+        return { name: e.tags?.name || null, sport: e.tags?.sport || '', dist: p.lat != null ? distMeters({ lat, lon }, p) : Infinity };
+      }).filter(x => x.dist <= TRACK_RADIUS_M);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('overpass');
+}
+
+async function findLocality(lat, lon) {
+  const r = await fetchTimeout(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16&accept-language=it`);
+  if (!r.ok) throw new Error('nominatim ' + r.status);
+  const a = (await r.json()).address || {};
+  const small = a.hamlet || a.locality || a.isolated_dwelling || a.neighbourhood || a.suburb || a.village;
+  const town = a.town || a.city || a.municipality || a.village;
+  const prov = (a['ISO3166-2-lvl6'] || '').replace(/^IT-/, '');
+  let name = small && town && small !== town ? `${small}, ${town}` : (small || town || a.county || '');
+  if (name && prov && /^[A-Z]{2}$/.test(prov)) name += ` (${prov})`;
+  return name;
+}
+
+function coordsName(lat, lon) { return `Posizione ${lat.toFixed(4)}, ${lon.toFixed(4)}`; }
+
+// Restituisce { name, source: 'mine' | 'official' | 'place', dist }
+async function identifyPlace(lat, lon) {
+  let mine = null, best = Infinity;
+  for (const t of db.tracks) {
+    if (t.lat == null) continue;
+    const d = distMeters({ lat, lon }, t);
+    if (d < best) { best = d; mine = t; }
+  }
+  if (mine && best < NEAR_METERS) return { name: mine.name, source: 'mine', dist: best };
+
+  const tracks = await findOfficialTracks(lat, lon);
+  const named = tracks.filter(t => t.name).sort((a, b) => a.dist - b.dist);
+  if (named.length) return { name: named[0].name, source: 'official', dist: named[0].dist };
+
+  const place = await findLocality(lat, lon);
+  if (tracks.length) {
+    const t = tracks.sort((a, b) => a.dist - b.dist)[0];
+    const kind = /motocross/i.test(t.sport) ? 'Pista motocross' : /enduro/i.test(t.sport) ? 'Pista enduro' : 'Pista';
+    return { name: place ? `${kind} · ${place}` : kind, source: 'official', dist: t.dist };
+  }
+  return { name: place || coordsName(lat, lon), source: 'place', dist: null };
+}
+
+function placeLabel(res) {
+  if (res.source === 'mine') return `✅ Pista già usata: <strong>${esc(res.name)}</strong>`;
+  if (res.source === 'official') return `✅ Pista agganciata: <strong>${esc(res.name)}</strong> (a ${Math.round(res.dist)} m)`;
+  return `📍 Nessuna pista nel raggio di ${TRACK_RADIUS_M / 1000} km · località: <strong>${esc(res.name)}</strong>`;
+}
+
+// posizione migliore in pochi secondi (si ferma appena la precisione è buona)
+function getBestPosition(maxMs = 9000, goodAcc = 25) {
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) return reject(new Error('nogps'));
+    let best = null, done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      navigator.geolocation.clearWatch(id); clearTimeout(timer);
+      best ? resolve(best) : reject(lastErr || new Error('timeout'));
+    };
+    let lastErr = null;
+    const id = navigator.geolocation.watchPosition(pos => {
+      if (!best || pos.coords.accuracy < best.coords.accuracy) best = pos;
+      if (pos.coords.accuracy <= goodAcc) finish();
+    }, err => { lastErr = err; if (err.code === 1) finish(); },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: maxMs });
+    const timer = setTimeout(finish, maxMs);
+  });
+}
+
+// assegna il nome alla pista di una sessione (se l'utente non l'ha scritto a mano)
+async function resolveTrackName(track) {
+  const res = await identifyPlace(track.lat, track.lon);
+  if (track.auto) {
+    track.name = res.name;
+    track.source = res.source;
+    track.pending = false;
+    rememberTrack(track);
+    save();
+  }
+  return res;
+}
+
+// sessioni create senza rete: prova a dare il nome appena torna il segnale
+let resolvingPending = false;
+async function resolvePending() {
+  if (resolvingPending || !navigator.onLine) return;
+  resolvingPending = true;
+  try {
+    for (const s of db.sessions) {
+      if (!s.track.pending || s.track.lat == null) continue;
+      try {
+        await resolveTrackName(s.track);
+        if (location.hash.startsWith('#s/' + s.id)) setHeader(s.track.name, fmtDate(s.createdAt), true);
+        else if (!location.hash || location.hash === '#') route();
+      } catch (_) { break; }
+    }
+  } finally { resolvingPending = false; }
+}
+window.addEventListener('online', resolvePending);
+
 /* ---------- NUOVA SESSIONE ---------- */
 
 function viewNew() {
   setHeader('Nuova sessione', '', true);
-  const draft = { track: { name: '', lat: null, lon: null, acc: null }, riders: [] };
-
+  const track = { name: '', lat: null, lon: null, acc: null, auto: true, pending: true, source: null };
+  const draft = { riders: [] };
   const tracksSorted = [...db.tracks].sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
 
   app.innerHTML = `
-    <label class="label" for="trackName">Pista / posto</label>
-    <input id="trackName" class="input" list="trackList" placeholder="Es. Fettucciato Monte Rosso" autocomplete="off">
-    <datalist id="trackList">${tracksSorted.map(t => `<option value="${esc(t.name)}">`).join('')}</datalist>
-    <div id="gpsBox" class="gps muted small">📍 Rilevo la posizione…</div>
+    <div class="card place-card">
+      <div id="gpsBox" class="gps"><span class="spinner"></span> Cerco la pista con il GPS…</div>
+      <input id="trackName" class="input" list="trackList" placeholder="Nome automatico" autocomplete="off">
+      <datalist id="trackList">${tracksSorted.map(t => `<option value="${esc(t.name)}">`).join('')}</datalist>
+      <div class="muted small">Il nome si mette da solo. Scrivilo solo se vuoi cambiarlo.</div>
+    </div>
 
     <label class="label" for="riderName">Piloti</label>
     <div class="row gap">
@@ -221,6 +356,9 @@ function viewNew() {
   const trackInput = document.getElementById('trackName');
   const riderInput = document.getElementById('riderName');
   const gpsBox = document.getElementById('gpsBox');
+  const onThisView = () => location.hash === '#new';
+
+  trackInput.addEventListener('input', () => { track.auto = !trackInput.value.trim(); });
 
   function renderRiders() {
     document.getElementById('riderChips').innerHTML = draft.riders.map((n, i) =>
@@ -247,45 +385,52 @@ function viewNew() {
   riderInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addRider(); } });
   renderRiders();
 
-  // GPS: rileva posizione e propone la pista nota più vicina
-  if ('geolocation' in navigator) {
-    navigator.geolocation.getCurrentPosition(pos => {
-      draft.track.lat = pos.coords.latitude;
-      draft.track.lon = pos.coords.longitude;
-      draft.track.acc = Math.round(pos.coords.accuracy);
-      let near = null, best = Infinity;
-      for (const t of db.tracks) {
-        if (t.lat == null) continue;
-        const d = distMeters(draft.track, t);
-        if (d < best) { best = d; near = t; }
-      }
-      gpsBox.innerHTML = `📍 Posizione rilevata (±${draft.track.acc} m)`;
-      if (near && best < NEAR_METERS && !trackInput.value) {
-        trackInput.value = near.name;
-        gpsBox.innerHTML += ` · sei vicino a <strong>${esc(near.name)}</strong>`;
-      }
-    }, err => {
-      gpsBox.textContent = err.code === 1
-        ? '📍 Posizione non autorizzata (facoltativa)'
-        : '📍 Posizione non disponibile (facoltativa)';
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
-  } else {
-    gpsBox.textContent = '📍 GPS non disponibile';
-  }
+  // riconoscimento automatico: continua anche dopo "Inizia sessione"
+  let createdSession = null;
+  const showName = () => {
+    if (onThisView() && track.auto) trackInput.value = track.name;
+    if (createdSession && location.hash.startsWith('#s/' + createdSession.id)) setHeader(track.name, fmtDate(createdSession.createdAt), true);
+  };
+  (async () => {
+    let pos;
+    try { pos = await getBestPosition(); }
+    catch (err) {
+      track.pending = false;
+      if (onThisView()) gpsBox.textContent = err && err.code === 1
+        ? '📍 Posizione non autorizzata: scrivi il nome a mano (facoltativo)'
+        : '📍 GPS non disponibile: scrivi il nome a mano (facoltativo)';
+      return;
+    }
+    track.lat = pos.coords.latitude; track.lon = pos.coords.longitude; track.acc = Math.round(pos.coords.accuracy);
+    if (track.auto) track.name = coordsName(track.lat, track.lon);
+    showName();
+    if (onThisView()) gpsBox.innerHTML = `<span class="spinner"></span> Posizione trovata (±${track.acc} m), cerco piste vicine…`;
+    try {
+      const res = await resolveTrackName(track);
+      showName();
+      if (onThisView()) gpsBox.innerHTML = placeLabel(res);
+    } catch (_) {
+      if (onThisView()) gpsBox.innerHTML = '📡 Senza rete: salvo le coordinate, il nome arriva appena torna il segnale';
+      if (createdSession) save();
+    }
+  })();
 
   document.getElementById('startSession').onclick = () => {
     if (riderInput.value.trim()) addRider();
     if (!draft.riders.length) { toast('Aggiungi almeno un pilota'); riderInput.focus(); return; }
-    draft.track.name = trackInput.value.trim() || 'Pista senza nome';
+    const typed = trackInput.value.trim();
+    if (typed && !track.auto) { track.name = typed; track.pending = false; track.source = 'manual'; }
+    if (!track.name) track.name = track.pending ? 'Rilevamento posizione…' : 'Pista senza nome';
     const s = {
       id: uid(),
       createdAt: Date.now(),
-      track: draft.track,
+      track,
       visibility: 'private',
       riders: draft.riders.map(n => ({ id: uid(), name: n, startedAt: null, runs: [] }))
     };
+    createdSession = s;
     draft.riders.forEach(rememberRider);
-    rememberTrack(draft.track);
+    if (!track.pending) rememberTrack(track);
     db.sessions.push(s);
     save();
     location.hash = 's/' + s.id;
@@ -452,7 +597,7 @@ function riderMenu(s, riderId) {
     <label class="label">Nome</label>
     <input class="input" id="rn" value="${esc(r.name)}">
     <div class="col gap">
-      <button class="btn primary" data-x="save">Salva nome</button>
+      <button class="btn primary" data-x="save">Salva nome pilota</button>
       <button class="btn danger" data-x="del">Rimuovi pilota dalla sessione</button>
       <button class="btn ghost" data-x="close">Chiudi</button>
     </div>`, body => {
@@ -502,7 +647,7 @@ function sessionMenu(s) {
     <input class="input" id="tn" value="${esc(s.track.name)}">
     <p class="muted small">${s.track.lat != null ? `📍 ${s.track.lat.toFixed(5)}, ${s.track.lon.toFixed(5)}` : '📍 Nessuna posizione salvata'}</p>
     <div class="col gap">
-      <button class="btn primary" data-x="save">Salva</button>
+      <button class="btn primary" data-x="save">Salva nome pista</button>
       ${s.track.lat != null ? '<button class="btn ghost" data-x="map">Apri posizione nelle mappe</button>' : ''}
       <button class="btn danger" data-x="del">Elimina sessione</button>
       <button class="btn ghost" data-x="close">Chiudi</button>
@@ -510,7 +655,7 @@ function sessionMenu(s) {
     body.querySelector('[data-x=close]').onclick = closeModal;
     body.querySelector('[data-x=save]').onclick = () => {
       const n = body.querySelector('#tn').value.trim();
-      if (n) { s.track.name = n; rememberTrack(s.track); save(); }
+      if (n) { s.track.name = n; s.track.auto = false; s.track.pending = false; rememberTrack(s.track); save(); }
       closeModal(); route();
     };
     const mapBtn = body.querySelector('[data-x=map]');
@@ -595,3 +740,4 @@ if ('serviceWorker' in navigator) {
 }
 
 route();
+resolvePending();
