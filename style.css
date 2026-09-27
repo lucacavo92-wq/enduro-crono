@@ -256,3 +256,5 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .sub-tabs { margin-bottom: 0; }
 .sub-tabs .tab { border: 0; background: transparent; font: inherit; font-weight: 700; font-size: 15px; }
 .sub-tabs .tab.on { background: var(--card); color: var(--ink); }
+.mx-status.goal { color: var(--best-ink); }
+.chart .axis-title { fill: var(--muted); font-size: 11px; font-weight: 700; }

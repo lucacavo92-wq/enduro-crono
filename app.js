@@ -407,7 +407,7 @@ function viewNew() {
   }
   mxBox.querySelectorAll('[data-free]').forEach(t => t.onclick = () => setFree(t.dataset.free === '1'));
   setFree(!!mxd.free);
-  const LIMITS = { manches: [1, 6, 1], durationMin: [3, 60, 1] };
+  const LIMITS = { manches: [1, 6, 1], durationMin: [1, 60, 1] };  // beta: 1 min per le prove
   mxBox.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
     const k = b.dataset.step, [lo, hi] = LIMITS[k];
     const dir = +b.dataset.d;
@@ -809,7 +809,7 @@ function mxDoneCount(r) { return (r.manches || []).filter(m => m.status !== 'run
 
 // quanti passaggi mancano alla fine (null = tempo non ancora scaduto)
 function mxRemaining(s, m, now) {
-  if (s.mx.free) return null;
+  if (s.mx.free || m.goalReached) return null;
   if (now - m.startedAt < s.mx.durationMs && !m.expired) return null;
   return s.mx.extraLaps + 1 - (m.afterExpiry || 0);
 }
@@ -859,9 +859,12 @@ function mxRenderCrono(s) {
     const m = mxCurrent(r);
     if (!m) return;
     const n = r.manches.length;
-    confirmBox(`Terminare adesso ${s.mx.free ? 'il turno' : 'la manche'} ${n} di ${r.name}? I giri già fatti restano salvati.`, 'Sì, termina', () => {
-      m.status = 'stopped'; m.endedAt = Date.now(); save(); mxRenderCrono(s);
-    }, true, 'No, continua');
+    const txt = m.goalReached
+      ? `Chiudere la manche ${n} di ${r.name}? Obiettivo già raggiunto: i giri in più restano salvati.`
+      : `Terminare adesso ${s.mx.free ? 'il turno' : 'la manche'} ${n} di ${r.name}? I giri già fatti restano salvati.`;
+    confirmBox(txt, m.goalReached ? 'Sì, chiudi' : 'Sì, termina', () => {
+      m.status = m.goalReached ? 'done' : 'stopped'; m.endedAt = Date.now(); save(); mxRenderCrono(s);
+    }, !m.goalReached, 'No, continua');
   });
   body.querySelectorAll('.run').forEach(b => b.onclick = () => mxLapMenu(s, b.dataset.r, b.dataset.m, b.dataset.run));
   body.querySelectorAll('.rider-name').forEach(b => b.onclick = () => riderMenu(s, b.dataset.r));
@@ -893,6 +896,10 @@ function mxStatusText(s, r, now) {
     return { text: `Manche ${done}/${tot} ${last.status === 'done' ? 'completata' : 'terminata'} · ${fmt(mxLapStats(last.laps).total)}`, cls: 'done' };
   }
   const idx = r.manches.length;
+  if (m.goalReached) {
+    const extra = m.laps.length - m.goalLaps;
+    return { text: `✓ Completata${extra ? ` · +${extra} ${extra === 1 ? 'giro' : 'giri'}` : ''}`, cls: 'goal' };
+  }
   const rem = mxRemaining(s, m, now);
   if (rem != null) return { text: `Manche ${idx}/${tot} · ${mxBoard(rem)}`, cls: rem <= 1 ? 'last' : 'board' };
   const left = d.durationMs - (now - m.startedAt);
@@ -970,16 +977,17 @@ function mxTap(s, riderId, t) {
   }
   const lastAt = m.laps.length ? m.laps[m.laps.length - 1].at : m.startedAt;
   m.laps.push({ id: uid(), ms: t - lastAt, at: t });
-  if (!s.mx.free && t - m.startedAt >= s.mx.durationMs) {
+  if (!s.mx.free && !m.goalReached && t - m.startedAt >= s.mx.durationMs) {
     m.expired = true;
     m.afterExpiry = (m.afterExpiry || 0) + 1;
   }
-  if (m.expired && m.afterExpiry >= s.mx.extraLaps + 1) {
-    m.status = 'done';
-    m.endedAt = t;
+  if (!m.goalReached && m.expired && m.afterExpiry >= s.mx.extraLaps + 1) {
+    // obiettivo raggiunto: la manche è completa ma si può continuare a girare
+    m.goalReached = true;
+    m.goalAt = t;
+    m.goalLaps = m.laps.length;
     vibrate([200, 100, 200, 100, 400]);
-    const ls = mxLapStats(m.laps);
-    toast(`${r.name}: manche ${r.manches.length} completata · ${ls.count} giri · ${fmt(ls.total)}`);
+    toast(`🏁 ${r.name}: obiettivo raggiunto! Manche ${r.manches.length} completata in ${fmt(t - m.startedAt)} · ${m.goalLaps} giri. Se continua a girare i tempi vengono presi lo stesso.`);
   } else {
     const rem = mxRemaining(s, m, t);
     vibrate(rem != null && rem <= 1 ? [80, 60, 80, 60, 80] : [40, 50, 40]);
@@ -1063,7 +1071,7 @@ function lapChart(r, U = { long: 'Manche', short: 'M' }) {
   const manches = r.manches.filter(m => m.laps.length);
   if (!manches.length) return '';
   const colors = seriesColors();
-  const W = 340, H = 190, L = 52, R = 30, T = 12, B = 26;
+  const W = 340, H = 200, L = 58, R = 30, T = 12, B = 36;
   const all = manches.flatMap(m => m.laps.map(l => l.ms));
   let lo = Math.min(...all), hi = Math.max(...all);
   const pad = Math.max(1000, (hi - lo) * 0.12);
@@ -1081,7 +1089,9 @@ function lapChart(r, U = { long: 'Manche', short: 'M' }) {
     <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" class="axis">${mmss(v)}</text>`).join('');
   const step = Math.max(1, Math.ceil(maxN / 8));
   const xl = Array.from({ length: maxN }, (_, i) => i).filter(i => i % step === 0 || i === maxN - 1)
-    .map(i => `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" class="axis">${i + 1}</text>`).join('');
+    .map(i => `<text x="${x(i)}" y="${H - 22}" text-anchor="middle" class="axis">${i + 1}</text>`).join('') +
+    `<text x="${L + (W - L - R) / 2}" y="${H - 4}" text-anchor="middle" class="axis-title">Giri</text>` +
+    `<text transform="translate(11 ${T + (H - T - B) / 2}) rotate(-90)" text-anchor="middle" class="axis-title">Tempo</text>`;
 
   const lines = manches.map((m, si) => {
     const c = colors[si % colors.length];
@@ -1109,7 +1119,6 @@ function lapChart(r, U = { long: 'Manche', short: 'M' }) {
         </svg>
         <div class="tip" hidden></div>
       </div>
-      <div class="muted small chart-cap">Tempo per giro (asse orizzontale: numero del giro). Più in basso = più veloce. Tocca il grafico per i valori.</div>
     </div>`;
 }
 
@@ -1148,10 +1157,13 @@ function mxRenderRanking(s) {
     const table = r.manches.map((m, i) => {
       const ls = mxLapStats(m.laps);
       if (!ls.count) return '';
+      const goal = m.goalReached ? m.goalLaps : null;
+      const giri = goal != null ? `${goal}${ls.count > goal ? ` <span class="muted">+${ls.count - goal}</span>` : ''}` : ls.count;
+      const totale = goal != null ? fmt(m.goalAt - m.startedAt) : fmt(ls.total);
       const fade = ls.fade == null ? '–' : (ls.fade > 0 ? `+${(ls.fade / 1000).toFixed(1)}s` : `${(ls.fade / 1000).toFixed(1)}s`);
-      return `<tr><td>${U.short}${i + 1}${m.status === 'stopped' && !s.mx.free ? ' <span class="muted">(interrotta)</span>' : m.status === 'running' ? ' <span class="muted">(in corso)</span>' : ''}</td>
-        <td>${ls.count}</td><td>${fmt(ls.total)}</td><td class="best-txt">${fmt(ls.best)}</td><td>${fmt(ls.avg)}</td>
-        <td class="${ls.fade == null ? '' : ls.fade > 0 ? 'worse' : 'better'}">${fade}</td></tr>`;
+      return `<tr><td>${U.short}${i + 1}${m.status === 'stopped' && !s.mx.free ? ' <span class="muted">(interrotta)</span>' : m.status === 'running' ? ' <span class="muted">(in corso)</span>' : ''}${m.goalReached ? ' ✓' : ''}</td>
+        <td>${giri}</td><td>${totale}</td><td class="best-txt">${fmt(ls.best)}</td><td>${fmt(ls.avg)}</td>
+        <td class="${ls.fade == null || Math.abs(ls.fade) < 100 ? '' : ls.fade > 0 ? 'worse' : 'better'}">${fade}</td></tr>`;
     }).join('');
     return `
       <div class="card">
