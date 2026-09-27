@@ -251,3 +251,8 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .mx-table td { padding: 6px 6px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .mx-table .worse { color: var(--worst-ink); font-weight: 700; }
 .mx-table .better { color: var(--best-ink); font-weight: 700; }
+
+[hidden] { display: none !important; }
+.sub-tabs { margin-bottom: 0; }
+.sub-tabs .tab { border: 0; background: transparent; font: inherit; font-weight: 700; font-size: 15px; }
+.sub-tabs .tab.on { background: var(--card); color: var(--ink); }

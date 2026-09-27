@@ -335,7 +335,7 @@ function viewNew() {
   const draft = { riders: [] };
   const tracksSorted = [...db.tracks].sort((a, b) => (b.lastUsed || 0) - (a.lastUsed || 0));
 
-  const mxd = db.mxDefaults || { manches: 2, durationMin: 20, extraLaps: 0 };
+  const mxd = { manches: 2, durationMin: 20, extraLaps: 0, free: false, ...(db.mxDefaults || {}) };
   let mode = db.lastMode || 'enduro';
 
   app.innerHTML = `
@@ -345,6 +345,12 @@ function viewNew() {
     </div>
 
     <div id="mxSettings" class="card mx-settings">
+      <div class="tabs sub-tabs">
+        <button class="tab" data-free="1">Allenamento libero</button>
+        <button class="tab" data-free="0">Manche</button>
+      </div>
+      <div id="freeHelp" class="muted small">Premi START e poi GIRO a ogni passaggio, senza limiti di tempo. Con la ✕ chiudi il turno e puoi ripartire quando vuoi.</div>
+      <div id="mancheBox" class="col gap">
       <div class="stepper-row">
         <span class="stepper-label">Manche</span>
         <div class="stepper"><button data-step="manches" data-d="-1">−</button><output id="mxManches">${mxd.manches}</output><button data-step="manches" data-d="1">+</button></div>
@@ -358,6 +364,7 @@ function viewNew() {
         <input type="checkbox" id="mxExtra" ${mxd.extraLaps ? 'checked' : ''}>
       </label>
       <div class="muted small">La manche finisce al primo passaggio dopo che il tempo è scaduto. Ogni pilota ha il suo tempo.</div>
+      </div>
     </div>
 
     <div class="card place-card">
@@ -392,6 +399,14 @@ function viewNew() {
   }
   document.querySelectorAll('.mode-tabs .tab').forEach(t => t.onclick = () => setMode(t.dataset.mode));
   setMode(mode);
+  function setFree(f) {
+    mxd.free = f;
+    mxBox.querySelectorAll('[data-free]').forEach(t => t.classList.toggle('on', (t.dataset.free === '1') === f));
+    document.getElementById('mancheBox').hidden = f;
+    document.getElementById('freeHelp').hidden = !f;
+  }
+  mxBox.querySelectorAll('[data-free]').forEach(t => t.onclick = () => setFree(t.dataset.free === '1'));
+  setFree(!!mxd.free);
   const LIMITS = { manches: [1, 6, 1], durationMin: [3, 60, 1] };
   mxBox.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
     const k = b.dataset.step, [lo, hi] = LIMITS[k];
@@ -475,7 +490,7 @@ function viewNew() {
       riders: draft.riders.map(n => ({ id: uid(), name: n, startedAt: null, runs: [], manches: [] }))
     };
     if (mode === 'mx') {
-      s.mx = { manches: mxd.manches, durationMs: mxd.durationMin * 60000, extraLaps: mxd.extraLaps };
+      s.mx = mxd.free ? { free: true } : { manches: mxd.manches, durationMs: mxd.durationMin * 60000, extraLaps: mxd.extraLaps };
       db.mxDefaults = { ...mxd };
     }
     db.lastMode = mode;
@@ -565,7 +580,7 @@ function riderCard(r) {
     if (st.count > 1 && run.ms === st.best) cls = 'best';
     else if (st.count > 1 && run.ms === st.worst) cls = 'worst';
     return `<button class="run ${cls}" data-r="${r.id}" data-run="${run.id}"><span class="run-n">${i + 1}</span>${fmt(run.ms)}</button>`;
-  }).join('');
+  }).reverse().join('');
 
   const clockText = running ? fmt(Date.now() - r.startedAt) : (st.count ? fmt(r.runs[r.runs.length - 1].ms) : '0:00.00');
 
@@ -789,10 +804,12 @@ function rerender(s) { (s.mode === 'mx' ? mxRenderCrono : renderCrono)(s); }
 function mxAllLaps(r) { return (r.manches || []).flatMap(m => m.laps); }
 function mxCurrent(r) { const m = (r.manches || [])[r.manches.length - 1]; return m && m.status === 'running' ? m : null; }
 function mxLast(r) { return (r.manches || [])[r.manches.length - 1] || null; }
+function mxUnit(s) { return s.mx.free ? { long: 'Turno', low: 'turno', short: 'T' } : { long: 'Manche', low: 'manche', short: 'M' }; }
 function mxDoneCount(r) { return (r.manches || []).filter(m => m.status !== 'running').length; }
 
 // quanti passaggi mancano alla fine (null = tempo non ancora scaduto)
 function mxRemaining(s, m, now) {
+  if (s.mx.free) return null;
   if (now - m.startedAt < s.mx.durationMs && !m.expired) return null;
   return s.mx.extraLaps + 1 - (m.afterExpiry || 0);
 }
@@ -822,7 +839,7 @@ function mxRenderCrono(s) {
   const body = document.getElementById('sessionBody');
   const d = s.mx;
   body.innerHTML = `
-    <div class="mx-info muted small">${d.manches} ${d.manches === 1 ? 'manche' : 'manche'} da ${Math.round(d.durationMs / 60000)} min${d.extraLaps ? ' + 2 giri' : ''} · tocca <strong>GIRO</strong> a ogni passaggio</div>` +
+    <div class="mx-info muted small">${d.free ? 'Allenamento libero' : `${d.manches} manche da ${Math.round(d.durationMs / 60000)} min${d.extraLaps ? ' + 2 giri' : ''}`} · tocca <strong>GIRO</strong> a ogni passaggio</div>` +
     s.riders.map(r => mxRiderCard(s, r)).join('') + `
     <div class="session-actions">
       <button class="btn ghost" id="addRiderBtn">+ Pilota</button>
@@ -842,7 +859,7 @@ function mxRenderCrono(s) {
     const m = mxCurrent(r);
     if (!m) return;
     const n = r.manches.length;
-    confirmBox(`Terminare adesso la manche ${n} di ${r.name}? I giri già fatti restano salvati.`, 'Sì, termina', () => {
+    confirmBox(`Terminare adesso ${s.mx.free ? 'il turno' : 'la manche'} ${n} di ${r.name}? I giri già fatti restano salvati.`, 'Sì, termina', () => {
       m.status = 'stopped'; m.endedAt = Date.now(); save(); mxRenderCrono(s);
     }, true, 'No, continua');
   });
@@ -859,6 +876,15 @@ function mxStatusText(s, r, now) {
   const m = mxCurrent(r);
   const d = s.mx;
   const tot = d.manches;
+  if (d.free) {
+    const n = r.manches.length;
+    if (!m) {
+      if (!n) return { text: 'Allenamento libero · pronto', cls: '' };
+      return { text: `Turno ${n} chiuso · ${mxLapStats(mxLast(r).laps).count} giri`, cls: 'done' };
+    }
+    const cur = m.laps.length ? now - m.laps[m.laps.length - 1].at : now - m.startedAt;
+    return { text: `Turno ${n} · giro ${m.laps.length + 1} · ${fmtClock(cur)}`, cls: '' };
+  }
   if (!m) {
     const done = mxDoneCount(r);
     if (done >= tot) return { text: 'Allenamento completato', cls: 'done' };
@@ -884,7 +910,7 @@ function mxRiderCard(s, r) {
   const m = mxCurrent(r);
   const shown = m || mxLast(r);
   const done = mxDoneCount(r);
-  const finished = !m && done >= s.mx.manches;
+  const finished = !s.mx.free && !m && done >= s.mx.manches;
   const st = mxStatusText(s, r, now);
   const laps = shown ? shown.laps : [];
   const ls = mxLapStats(laps);
@@ -895,7 +921,7 @@ function mxRiderCard(s, r) {
     if (ls.count > 1 && l.ms === ls.best) cls = 'best';
     else if (ls.count > 1 && l.ms === ls.worst) cls = 'worst';
     return `<button class="run ${cls}" data-r="${r.id}" data-m="${mIndex}" data-run="${l.id}"><span class="run-n">${i + 1}</span>${fmt(l.ms)}</button>`;
-  }).join('');
+  }).reverse().join('');
 
   let clock = '0:00.00';
   if (m) clock = fmt(now - m.startedAt);
@@ -904,7 +930,7 @@ function mxRiderCard(s, r) {
   let btnLabel = 'START', btnCls = 'start';
   if (m) { btnLabel = 'GIRO'; btnCls = 'lap'; }
   else if (finished) { btnLabel = 'FINITO'; btnCls = 'finished'; }
-  else if (done > 0) { btnLabel = `START M${done + 1}`; }
+  else if (done > 0 && !s.mx.free) { btnLabel = `START M${done + 1}`; }
 
   const rem = m ? mxRemaining(s, m, now) : null;
 
@@ -917,7 +943,7 @@ function mxRiderCard(s, r) {
           <div class="mx-status ${st.cls}" data-status="${r.id}">${esc(st.text)}</div>
           ${ls.count ? `<div class="rider-sum"><span class="best-txt">▲ ${fmt(ls.best)}</span> · media ${fmt(ls.avg)} · ${ls.count} giri</div>` : ''}
         </div>
-        ${m ? `<button class="abort" data-r="${r.id}" aria-label="Termina manche">✕</button>` : ''}
+        ${m ? `<button class="abort" data-r="${r.id}" aria-label="Termina">✕</button>` : ''}
         <button class="go ${btnCls}" data-r="${r.id}" ${finished ? 'disabled' : ''}>${btnLabel}</button>
       </div>
       ${ls.count ? `<div class="runs">${lapsHtml}</div>` : ''}
@@ -936,7 +962,7 @@ function mxTap(s, riderId, t) {
 
   let m = mxCurrent(r);
   if (!m) {
-    if (mxDoneCount(r) >= s.mx.manches) return;
+    if (!s.mx.free && mxDoneCount(r) >= s.mx.manches) return;
     r.manches.push({ startedAt: t, laps: [], status: 'running', afterExpiry: 0 });
     vibrate(60);
     save(); mxRenderCrono(s);
@@ -944,7 +970,7 @@ function mxTap(s, riderId, t) {
   }
   const lastAt = m.laps.length ? m.laps[m.laps.length - 1].at : m.startedAt;
   m.laps.push({ id: uid(), ms: t - lastAt, at: t });
-  if (t - m.startedAt >= s.mx.durationMs) {
+  if (!s.mx.free && t - m.startedAt >= s.mx.durationMs) {
     m.expired = true;
     m.afterExpiry = (m.afterExpiry || 0) + 1;
   }
@@ -1002,7 +1028,7 @@ function mxLapMenu(s, riderId, mIdx, lapId) {
   const idx = m.laps.findIndex(l => l.id === lapId);
   const lap = m.laps[idx];
   openModal(`
-    <h3>${esc(r.name)} · manche ${+mIdx + 1} · giro ${idx + 1}</h3>
+    <h3>${esc(r.name)} · ${mxUnit(s).low} ${+mIdx + 1} · giro ${idx + 1}</h3>
     <p class="big-time">${fmt(lap.ms)}</p>
     <p class="muted small">Se elimini un giro, il suo tempo si somma al giro successivo (il pilota ha comunque percorso la pista).</p>
     <div class="col gap">
@@ -1033,7 +1059,7 @@ function seriesColors() {
   return matchMedia('(prefers-color-scheme: dark)').matches ? SERIES.dark : SERIES.light;
 }
 
-function lapChart(r) {
+function lapChart(r, U = { long: 'Manche', short: 'M' }) {
   const manches = r.manches.filter(m => m.laps.length);
   if (!manches.length) return '';
   const colors = seriesColors();
@@ -1064,13 +1090,13 @@ function lapChart(r) {
     const path = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
     const dots = pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="${m.laps[i].ms === best ? 5 : 4}" fill="${c}" class="pt"/>`).join('');
     const lp = pts[pts.length - 1];
-    const label = manches.length > 1 && manches.length <= 4 ? `<text x="${lp[0] + 7}" y="${lp[1] + 4}" class="dlabel">M${r.manches.indexOf(m) + 1}</text>` : '';
+    const label = manches.length > 1 && manches.length <= 4 ? `<text x="${lp[0] + 7}" y="${lp[1] + 4}" class="dlabel">${U.short}${r.manches.indexOf(m) + 1}</text>` : '';
     return `<path d="${path}" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>${dots}${label}`;
   }).join('');
 
-  const data = JSON.stringify(manches.map((m, si) => ({ n: r.manches.indexOf(m) + 1, c: colors[si % colors.length], laps: m.laps.map(l => l.ms) })));
+  const data = JSON.stringify(manches.map((m, si) => ({ n: U.short + (r.manches.indexOf(m) + 1), c: colors[si % colors.length], laps: m.laps.map(l => l.ms) })));
   const legend = manches.length > 1 ? `<div class="legend">${manches.map((m, si) =>
-    `<span><i style="background:${colors[si % colors.length]}"></i>Manche ${r.manches.indexOf(m) + 1}</span>`).join('')}</div>` : '';
+    `<span><i style="background:${colors[si % colors.length]}"></i>${U.long} ${r.manches.indexOf(m) + 1}</span>`).join('')}</div>` : '';
 
   return `
     <div class="chart" data-chart='${data.replace(/'/g, '&#39;')}' data-geo='${JSON.stringify({ W, H, L, R, T, B, lo, hi, maxN })}'>
@@ -1099,7 +1125,7 @@ function wireCharts(root) {
       const xx = g.maxN === 1 ? g.L + (g.W - g.L - g.R) / 2 : g.L + i * (g.W - g.L - g.R) / (g.maxN - 1);
       xh.setAttribute('x1', xx); xh.setAttribute('x2', xx); xh.setAttribute('visibility', 'visible');
       const rows = data.filter(d => d.laps[i] != null)
-        .map(d => `<div><i style="background:${d.c}"></i>M${d.n} <strong>${fmt(d.laps[i])}</strong></div>`).join('');
+        .map(d => `<div><i style="background:${d.c}"></i>${d.n} <strong>${fmt(d.laps[i])}</strong></div>`).join('');
       tip.innerHTML = `<div class="tip-h">Giro ${i + 1}</div>${rows}`;
       tip.hidden = false;
       const left = xx / g.W * rect.width;
@@ -1112,6 +1138,7 @@ function wireCharts(root) {
 }
 
 function mxRenderRanking(s) {
+  const U = mxUnit(s);
   const body = document.getElementById('sessionBody');
   const rows = s.riders.map(r => ({ r, st: mxLapStats(mxAllLaps(r)) }));
   const ranked = rows.filter(x => x.st.count).sort((a, b) => a.st.best - b.st.best);
@@ -1122,16 +1149,16 @@ function mxRenderRanking(s) {
       const ls = mxLapStats(m.laps);
       if (!ls.count) return '';
       const fade = ls.fade == null ? '–' : (ls.fade > 0 ? `+${(ls.fade / 1000).toFixed(1)}s` : `${(ls.fade / 1000).toFixed(1)}s`);
-      return `<tr><td>M${i + 1}${m.status === 'stopped' ? ' <span class="muted">(interrotta)</span>' : m.status === 'running' ? ' <span class="muted">(in corso)</span>' : ''}</td>
+      return `<tr><td>${U.short}${i + 1}${m.status === 'stopped' && !s.mx.free ? ' <span class="muted">(interrotta)</span>' : m.status === 'running' ? ' <span class="muted">(in corso)</span>' : ''}</td>
         <td>${ls.count}</td><td>${fmt(ls.total)}</td><td class="best-txt">${fmt(ls.best)}</td><td>${fmt(ls.avg)}</td>
         <td class="${ls.fade == null ? '' : ls.fade > 0 ? 'worse' : 'better'}">${fade}</td></tr>`;
     }).join('');
     return `
       <div class="card">
         <h3 class="rider-h">${esc(r.name)}</h3>
-        ${lapChart(r)}
+        ${lapChart(r, U)}
         <div class="table-wrap"><table class="mx-table">
-          <thead><tr><th>Manche</th><th>Giri</th><th>Totale</th><th>Migliore</th><th>Media</th><th>Calo</th></tr></thead>
+          <thead><tr><th>${U.long}</th><th>Giri</th><th>Totale</th><th>Migliore</th><th>Media</th><th>Calo</th></tr></thead>
           <tbody>${table}</tbody>
         </table></div>
       </div>`;
@@ -1146,21 +1173,21 @@ function mxRenderRanking(s) {
           <div class="muted small">${x.st.count} giri · media ${fmt(x.st.avg)}</div></div>
         <div class="rank-time"><strong>${fmt(x.st.best)}</strong>${i ? `<div class="muted small">${fmtDelta(x.st.best - top)}</div>` : ''}</div>
       </div>`).join('') : '<p class="muted">Ancora nessun giro registrato.</p>'}
-    ${perRider ? `<h2 class="section">Giri e manche</h2>${perRider}
+    ${perRider ? `<h2 class="section">Giri e ${s.mx.free ? 'turni' : 'manche'}</h2>${perRider}
       <p class="muted small">Calo = quanto sono più lenti, in media, i giri della seconda metà rispetto alla prima (escluso il giro di partenza, servono almeno 5 giri). Positivo = hai perso ritmo.</p>` : ''}`;
   wireCharts(body);
 }
 
 function mxSessionText(s) {
   const lines = [`🏁 MX ${s.track.name} — ${fmtDate(s.createdAt)}`,
-    `${s.mx.manches} manche da ${Math.round(s.mx.durationMs / 60000)} min${s.mx.extraLaps ? ' + 2 giri' : ''}`];
+    s.mx.free ? 'Allenamento libero' : `${s.mx.manches} manche da ${Math.round(s.mx.durationMs / 60000)} min${s.mx.extraLaps ? ' + 2 giri' : ''}`];
   for (const r of s.riders) {
     if (!mxAllLaps(r).length) continue;
     lines.push('', r.name);
     r.manches.forEach((m, i) => {
       const ls = mxLapStats(m.laps);
       if (!ls.count) return;
-      lines.push(`  Manche ${i + 1}: ${ls.count} giri · ${fmt(ls.total)} · migliore ${fmt(ls.best)}`);
+      lines.push(`  ${mxUnit(s).long} ${i + 1}: ${ls.count} giri · ${fmt(ls.total)} · migliore ${fmt(ls.best)}`);
       lines.push('    ' + m.laps.map(l => fmt(l.ms) + (ls.count > 1 && l.ms === ls.best ? '★' : '')).join('  '));
     });
   }
