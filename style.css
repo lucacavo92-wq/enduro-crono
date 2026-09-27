@@ -115,48 +115,46 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .tab { flex: 1; text-align: center; padding: 10px; border-radius: 9px; font-weight: 700; color: var(--muted); }
 .tab.on { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
 
-/* scheda pilota */
+/* scheda pilota (compatta: tanti piloti senza scorrere) */
+.rider { padding: 10px 10px 10px 14px; margin-bottom: 8px; }
 .rider.running { border-color: var(--go); box-shadow: 0 0 0 2px var(--go) inset, var(--shadow); }
-.rider-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.rider-name { background: none; border: 0; padding: 0; font-size: 20px; font-weight: 800; text-align: left; }
-.rider-sum { display: flex; flex-direction: column; align-items: flex-end; font-size: 13px; color: var(--muted); }
-.rider-sum strong { color: var(--ink); }
+.rider-row { display: flex; align-items: center; gap: 8px; }
+.rider-info { flex: 1; min-width: 0; }
+.rider-name {
+  background: none; border: 0; padding: 0; font-size: 17px; font-weight: 800; text-align: left;
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;
+}
 .clock {
   font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
-  font-size: clamp(44px, 15vw, 64px); font-weight: 800; letter-spacing: -.02em;
-  text-align: center; margin: 6px 0 10px;
+  font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1;
 }
 .rider:not(.running) .clock { color: var(--muted); }
+.rider-sum { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.best-txt { color: var(--best-ink); font-weight: 800; }
 .go {
-  width: 100%; border: 0; border-radius: 14px; min-height: 84px;
-  font-size: 28px; font-weight: 900; letter-spacing: .08em;
+  flex: none; width: 118px; height: 72px; border: 0; border-radius: 14px;
+  font-size: 21px; font-weight: 900; letter-spacing: .06em;
   touch-action: manipulation; user-select: none; -webkit-user-select: none;
 }
-.compact .clock { font-size: clamp(34px, 11vw, 46px); margin: 2px 0 8px; }
-.compact .go { min-height: 64px; font-size: 24px; }
-.compact .rider { padding: 12px 14px; }
 .go.start { background: var(--go); color: var(--go-ink); }
 .go.stop { background: var(--stop); color: var(--stop-ink); }
 .go:active { filter: brightness(.9); }
-
-.best-line { margin: 14px 2px 8px; font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.best-line strong { color: var(--ink); font-variant-numeric: tabular-nums; }
-.sep { opacity: .5; }
-.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.dot.best { background: var(--go); }
-
-.runs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.run {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  border: 1.5px solid var(--line); background: transparent; border-radius: 10px;
-  padding: 8px 10px; text-align: left; font-variant-numeric: tabular-nums;
+.abort {
+  flex: none; width: 40px; height: 40px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--card); color: var(--muted);
+  font-size: 18px; font-weight: 800; display: grid; place-items: center;
 }
-.run-n { font-size: 12px; color: var(--muted); font-weight: 700; min-width: 14px; }
-.run-t { font-weight: 800; font-size: 17px; }
-.run-d { font-size: 12px; color: var(--muted); width: 100%; padding-left: 22px; margin-top: -2px; }
+
+.runs { display: flex; gap: 6px; overflow-x: auto; margin-top: 8px; padding-bottom: 2px; scrollbar-width: none; }
+.runs::-webkit-scrollbar { display: none; }
+.run {
+  flex: none; border: 1.5px solid var(--line); background: transparent; border-radius: 8px;
+  padding: 4px 8px; font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.run-n { font-size: 11px; color: var(--muted); margin-right: 5px; }
 .run.best { background: var(--best-bg); border-color: transparent; color: var(--best-ink); }
 .run.worst { background: var(--worst-bg); border-color: transparent; color: var(--worst-ink); }
-.run.best .run-n, .run.best .run-d, .run.worst .run-n, .run.worst .run-d { color: inherit; opacity: .8; }
+.run.best .run-n, .run.worst .run-n { color: inherit; opacity: .75; }
 
 .session-actions { display: flex; gap: 8px; margin-top: 8px; }
 .session-actions .btn { flex: 1; font-size: 15px; padding: 10px 8px; }

@@ -127,11 +127,11 @@ function openModal(html, onMount) {
 }
 function closeModal() { document.getElementById('modal').hidden = true; }
 
-function confirmBox(text, okLabel, onOk, danger = true) {
+function confirmBox(text, okLabel, onOk, danger = true, noLabel = 'Annulla') {
   openModal(`
     <p class="modal-text">${esc(text)}</p>
     <div class="row gap">
-      <button class="btn ghost" data-x="no">Annulla</button>
+      <button class="btn ghost" data-x="no">${esc(noLabel)}</button>
       <button class="btn ${danger ? 'danger' : 'primary'}" data-x="ok">${esc(okLabel)}</button>
     </div>`, body => {
     body.querySelector('[data-x=no]').onclick = closeModal;
@@ -331,7 +331,6 @@ function viewSession(id, tab) {
 
 function renderCrono(s) {
   const body = document.getElementById('sessionBody');
-  body.classList.toggle('compact', s.riders.length > 2);
   body.innerHTML = s.riders.map(r => riderCard(r)).join('') + `
     <div class="session-actions">
       <button class="btn ghost" id="addRiderBtn">+ Pilota</button>
@@ -346,9 +345,12 @@ function renderCrono(s) {
     });
     btn.addEventListener('click', e => e.preventDefault());
   });
-  body.querySelectorAll('.cancel-start').forEach(b => b.onclick = () => {
+  body.querySelectorAll('.abort').forEach(b => b.onclick = () => {
     const r = s.riders.find(x => x.id === b.dataset.r);
-    r.startedAt = null; save(); renderCrono(s); toast('Partenza annullata');
+    if (!r || !r.startedAt) return;
+    confirmBox(`Interrompere il tempo di ${r.name}? Il tempo in corso non verrà salvato.`, 'Sì, interrompi', () => {
+      r.startedAt = null; save(); renderCrono(s);
+    }, true, 'No, continua');
   });
   body.querySelectorAll('.run').forEach(b => b.onclick = () => runMenu(s, b.dataset.r, b.dataset.run));
   body.querySelectorAll('.rider-name').forEach(b => b.onclick = () => riderMenu(s, b.dataset.r));
@@ -366,29 +368,25 @@ function riderCard(r) {
     let cls = '';
     if (st.count > 1 && run.ms === st.best) cls = 'best';
     else if (st.count > 1 && run.ms === st.worst) cls = 'worst';
-    return `<button class="run ${cls}" data-r="${r.id}" data-run="${run.id}">
-      <span class="run-n">${i + 1}</span><span class="run-t">${fmt(run.ms)}</span>
-      ${st.count > 1 && run.ms !== st.best ? `<span class="run-d">${fmtDelta(run.ms - st.best)}</span>` : ''}
-    </button>`;
+    return `<button class="run ${cls}" data-r="${r.id}" data-run="${run.id}"><span class="run-n">${i + 1}</span>${fmt(run.ms)}</button>`;
   }).join('');
+
+  const clockText = running ? fmt(Date.now() - r.startedAt) : (st.count ? fmt(r.runs[r.runs.length - 1].ms) : '0:00.00');
 
   return `
     <section class="card rider ${running ? 'running' : ''}" id="rider-${r.id}">
-      <div class="rider-head">
-        <button class="rider-name" data-r="${r.id}">${esc(r.name)}</button>
-        <div class="rider-sum">
-          ${st.count ? `<span>${st.count} ${st.count === 1 ? 'tempo' : 'tempi'}</span><span>Totale <strong>${fmt(st.total)}</strong></span>` : '<span class="muted">nessun tempo</span>'}
+      <div class="rider-row">
+        <div class="rider-info">
+          <button class="rider-name" data-r="${r.id}">${esc(r.name)}</button>
+          <div class="clock" data-clock="${r.id}">${clockText}</div>
+          <div class="rider-sum">${st.count
+            ? `<span class="best-txt">▲ ${fmt(st.best)}</span> · Tot ${fmt(st.total)} · ${st.count}`
+            : 'nessun tempo'}</div>
         </div>
+        ${running ? `<button class="abort" data-r="${r.id}" aria-label="Interrompi tempo">✕</button>` : ''}
+        <button class="go ${running ? 'stop' : 'start'}" data-r="${r.id}">${running ? 'STOP' : 'START'}</button>
       </div>
-      <div class="clock" data-clock="${r.id}">${running ? fmt(Date.now() - r.startedAt) : (st.count ? fmt(r.runs[r.runs.length - 1].ms) : '0:00.00')}</div>
-      <button class="go ${running ? 'stop' : 'start'}" data-r="${r.id}">${running ? 'STOP' : 'START'}</button>
-      ${running ? `<button class="link cancel-start" data-r="${r.id}">Partito per sbaglio? Annulla partenza</button>` : ''}
-      ${st.count ? `
-        <div class="best-line">
-          <span class="dot best"></span> Migliore <strong>${fmt(st.best)}</strong>
-          ${st.count > 1 ? `<span class="sep">·</span> Media <strong>${fmt(st.avg)}</strong>` : ''}
-        </div>
-        <div class="runs">${runsHtml}</div>` : ''}
+      ${st.count ? `<div class="runs">${runsHtml}</div>` : ''}
     </section>`;
 }
 
@@ -402,27 +400,13 @@ function toggleRider(s, riderId, t) {
   if (!r.startedAt) {
     r.startedAt = t;
     vibrate(60);
-    save();
-    renderCrono(s);
   } else {
-    const ms = t - r.startedAt;
-    const startedAt = r.startedAt;
-    const run = { id: uid(), ms, at: t };
-    r.runs.push(run);
+    r.runs.push({ id: uid(), ms: t - r.startedAt, at: t });
     r.startedAt = null;
     vibrate([40, 60, 40]);
-    save();
-    renderCrono(s);
-    const st = stats(r.runs);
-    const msg = `${r.name}: ${fmt(ms)}` + (st.count > 1 && ms === st.best ? ' · nuovo migliore!' : '');
-    toast(msg, {
-      label: 'Annulla stop', run: () => {
-        r.runs = r.runs.filter(x => x.id !== run.id);
-        r.startedAt = startedAt;
-        save(); renderCrono(s);
-      }
-    });
   }
+  save();
+  renderCrono(s);
 }
 
 function startTicker(s) {
