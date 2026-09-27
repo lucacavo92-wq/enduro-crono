@@ -4,7 +4,7 @@
   --ink: #121212;
   --muted: #6b675f;
   --line: #e2ded6;
-  --accent: #0b6e79;   /* blu ottanio */
+  --accent: #0d6b5e;   /* verde ottanio */
   --accent-ink: #ffffff;
   --go: #12a150;
   --go-ink: #ffffff;
@@ -262,6 +262,6 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .session-card.pressing { transform: scale(.98); }
 .center { text-align: center; }
 @media (prefers-color-scheme: dark) {
-  :root { --accent: #0e7f8b; }
+  :root { --accent: #10806f; }
   .mx-status.board { color: #f0a54a; }
 }

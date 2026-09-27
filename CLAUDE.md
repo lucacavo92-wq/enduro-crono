@@ -14,7 +14,7 @@ Stato: **beta**, la usa solo il proprietario (Luca). App pubblicata: https://luc
 Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 - `index.html` — guscio della pagina
 - `app.js` — tutta la logica (viste, cronometri, analisi, GPS)
-- `style.css` — stile (colore principale **blu ottanio** `#0b6e79`, tema chiaro/scuro)
+- `style.css` — stile (colore principale **verde ottanio** `#0d6b5e`, in tema scuro `#10806f`; stesso colore nello sfondo delle icone, tema chiaro/scuro)
 - `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`), altrimenti i telefoni restano sulla versione vecchia.
 - `manifest.webmanifest`, `icons/` — installazione sulla schermata home
 - `tests/run_tests.py` — 55 test automatici (Playwright + Chromium, orologio simulato)
