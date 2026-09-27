@@ -883,12 +883,13 @@ function mxRenderCrono(s) {
     const r = s.riders.find(x => x.id === b.dataset.r);
     const m = mxCurrent(r);
     if (!m) return;
+    const pressedAt = Date.now();   // conta il momento del tocco sulla X, non quello della conferma
     const n = r.manches.length;
     const txt = m.goalReached
       ? `Chiudere la manche ${n} di ${r.name}? Obiettivo già raggiunto: i giri in più restano salvati.`
       : `Terminare adesso ${s.mx.free ? 'il turno' : 'la manche'} ${n} di ${r.name}? I giri già fatti restano salvati.`;
     confirmBox(txt, m.goalReached ? 'Sì, chiudi' : 'Sì, termina', () => {
-      m.status = m.goalReached ? 'done' : 'stopped'; m.endedAt = Date.now(); save(); mxRenderCrono(s);
+      m.status = m.goalReached ? 'done' : 'stopped'; m.endedAt = pressedAt; save(); mxRenderCrono(s);
     }, !m.goalReached, 'No, continua');
   });
   body.querySelectorAll('.run').forEach(b => b.onclick = () => mxLapMenu(s, b.dataset.r, b.dataset.m, b.dataset.run));
@@ -911,7 +912,7 @@ function mxStatusText(s, r, now) {
       return { text: `Turno ${n} chiuso · ${mxLapStats(mxLast(r).laps).count} giri`, cls: 'done' };
     }
     const cur = m.laps.length ? now - m.laps[m.laps.length - 1].at : now - m.startedAt;
-    return { text: `Turno ${n} · giro ${m.laps.length + 1} · ${fmtClock(cur)}`, cls: '' };
+    return { text: `T${n} · giro ${m.laps.length + 1} · ${fmtClock(cur)}`, cls: '' };
   }
   if (!m) {
     const done = mxDoneCount(r);
@@ -926,9 +927,9 @@ function mxStatusText(s, r, now) {
     return { text: `✓ Completata${extra ? ` · +${extra} ${extra === 1 ? 'giro' : 'giri'}` : ''}`, cls: 'goal' };
   }
   const rem = mxRemaining(s, m, now);
-  if (rem != null) return { text: `Manche ${idx}/${tot} · ${mxBoard(rem)}`, cls: rem <= 1 ? 'last' : 'board' };
+  if (rem != null) return { text: `M${idx}/${tot} · ${mxBoard(rem)}`, cls: rem <= 1 ? 'last' : 'board' };
   const left = d.durationMs - (now - m.startedAt);
-  return { text: `Manche ${idx}/${tot} · mancano ${fmtClock(left)} · giro ${m.laps.length + 1}`, cls: '' };
+  return { text: `M${idx}/${tot} · mancano ${fmtClock(left)}`, cls: '' };
 }
 
 function fmtClock(ms) {

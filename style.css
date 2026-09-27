@@ -4,7 +4,7 @@
   --ink: #121212;
   --muted: #6b675f;
   --line: #e2ded6;
-  --accent: #f26a1b;
+  --accent: #0b6e79;   /* blu ottanio */
   --accent-ink: #ffffff;
   --go: #12a150;
   --go-ink: #ffffff;
@@ -189,7 +189,7 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
   box-shadow: 0 6px 24px rgba(0,0,0,.25); font-weight: 600;
 }
 .toast[hidden] { display: none; }
-.toast-action { background: none; border: 0; color: var(--accent); font-weight: 800; padding: 6px 4px; white-space: nowrap; }
+.toast-action { background: none; border: 0; color: #5fd0dc; font-weight: 800; padding: 6px 4px; white-space: nowrap; }
 
 /* riconoscimento pista */
 .place-card { display: flex; flex-direction: column; gap: 10px; }
@@ -218,7 +218,7 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 /* scheda motocross */
 .mx-info { margin: -4px 4px 10px; }
 .mx-status { font-size: 13px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mx-status.board { color: var(--accent); }
+.mx-status.board { color: #b25e00; }
 .mx-status.last { color: #fff; background: var(--stop); display: inline-block; padding: 1px 8px; border-radius: 6px; }
 .mx-status.done { color: var(--best-ink); }
 .go.lap { background: #1f5fbf; color: #fff; font-size: 24px; }
@@ -261,3 +261,7 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .session-card { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; transition: transform .15s; }
 .session-card.pressing { transform: scale(.98); }
 .center { text-align: center; }
+@media (prefers-color-scheme: dark) {
+  :root { --accent: #0e7f8b; }
+  .mx-status.board { color: #f0a54a; }
+}
