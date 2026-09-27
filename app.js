@@ -190,8 +190,28 @@ function viewHome() {
         <p><strong>Nessuna sessione ancora.</strong></p>
         <p class="muted">Crea una sessione, aggiungi i piloti e premi START quando partono. Funziona anche senza segnale: i tempi restano salvati sul telefono.</p>
       </div>`}
+    ${sessions.length ? '<p class="muted small center">Tieni premuto su una sessione per condividerla, rinominarla o eliminarla</p>' : ''}
     <p class="footnote">Versione beta · dati salvati solo su questo telefono</p>`;
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
+
+  // tieni premuto su una sessione: menu rapido
+  app.querySelectorAll('.session-card').forEach(card => {
+    let timer = null, startX = 0, startY = 0, fired = false;
+    const cancel = () => { clearTimeout(timer); timer = null; card.classList.remove('pressing'); };
+    card.addEventListener('pointerdown', e => {
+      fired = false; startX = e.clientX; startY = e.clientY;
+      card.classList.add('pressing');
+      timer = setTimeout(() => {
+        fired = true; cancel(); vibrate(30);
+        const sess = getSession(card.getAttribute('href').split('/')[1]);
+        if (sess) sessionMenu(sess);
+      }, 550);
+    });
+    card.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - startX, e.clientY - startY) > 10) cancel(); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => card.addEventListener(ev, cancel));
+    card.addEventListener('click', e => { if (fired) { e.preventDefault(); fired = false; } });
+    card.addEventListener('contextmenu', e => e.preventDefault());
+  });
 }
 
 /* ---------- RICONOSCIMENTO PISTA (GPS + OpenStreetMap) ---------- */
@@ -708,12 +728,14 @@ function addRiderModal(s) {
 
 function sessionMenu(s) {
   openModal(`
-    <h3>Sessione</h3>
+    <h3>${esc(s.track.name)}</h3>
+    <p class="muted small">${fmtDate(s.createdAt)}${s.mode === 'mx' ? ' · Motocross' : ' · Enduro'}</p>
     <label class="label">Nome pista</label>
     <input class="input" id="tn" value="${esc(s.track.name)}">
     <p class="muted small">${s.track.lat != null ? `📍 ${s.track.lat.toFixed(5)}, ${s.track.lon.toFixed(5)}` : '📍 Nessuna posizione salvata'}</p>
     <div class="col gap">
       <button class="btn primary" data-x="save">Salva nome pista</button>
+      <button class="btn ghost" data-x="share">Condividi tempi</button>
       ${s.track.lat != null ? '<button class="btn ghost" data-x="map">Apri posizione nelle mappe</button>' : ''}
       <button class="btn danger" data-x="del">Elimina sessione</button>
       <button class="btn ghost" data-x="close">Chiudi</button>
@@ -724,6 +746,7 @@ function sessionMenu(s) {
       if (n) { s.track.name = n; s.track.auto = false; s.track.pending = false; rememberTrack(s.track); save(); }
       closeModal(); route();
     };
+    body.querySelector('[data-x=share]').onclick = () => { closeModal(); shareSession(s); };
     const mapBtn = body.querySelector('[data-x=map]');
     if (mapBtn) mapBtn.onclick = () => {
       window.open(`https://www.google.com/maps?q=${s.track.lat},${s.track.lon}`, '_blank');
@@ -731,7 +754,9 @@ function sessionMenu(s) {
     body.querySelector('[data-x=del]').onclick = () => {
       closeModal();
       confirmBox('Eliminare la sessione e tutti i tempi? Non si può annullare.', 'Elimina', () => {
-        db.sessions = db.sessions.filter(x => x.id !== s.id); save(); location.hash = '';
+        db.sessions = db.sessions.filter(x => x.id !== s.id); save();
+        if (location.hash && location.hash !== '#') location.hash = ''; else route();
+        toast('Sessione eliminata');
       });
     };
   });

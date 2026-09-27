@@ -258,3 +258,6 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .sub-tabs .tab.on { background: var(--card); color: var(--ink); }
 .mx-status.goal { color: var(--best-ink); }
 .chart .axis-title { fill: var(--muted); font-size: 11px; font-weight: 700; }
+.session-card { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; transition: transform .15s; }
+.session-card.pressing { transform: scale(.98); }
+.center { text-align: center; }
