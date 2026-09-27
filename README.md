@@ -5,6 +5,7 @@ Cronometro per allenamenti enduro. Web app installabile (PWA), funziona anche se
 - Più piloti in contemporanea, ognuno con START/STOP
 - Ogni tempo registrato, somma, media, migliore (verde) e peggiore (rosso)
 - Classifica per miglior tempo e per somma
+- Modalità Motocross: manche a tempo (+2 giri opzionali), pulsante GIRO per pilota, grafico dei giri e calo di ritmo
 - Posizione GPS della pista, per ritrovarla nelle sessioni successive
 - Dati salvati sul telefono; sincronizzazione online (Supabase) in arrivo
 
