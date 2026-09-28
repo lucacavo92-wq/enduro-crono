@@ -165,6 +165,9 @@ function setHeader(title, sub, back) {
   subEl.textContent = sub || '';
   subEl.hidden = !sub;
   backBtn.hidden = !back;
+  document.getElementById('betaTag').hidden = title !== 'Enduro Crono';   // BETA accanto al nome dell'app
+  document.body.classList.toggle('in-session', !!back);                    // dentro una sessione: solo l'avatar
+  renderUserBtn();
 }
 
 /* ---------- HOME ---------- */
@@ -186,7 +189,7 @@ function viewHome() {
       </a>`;
   }).join('');
 
-  app.innerHTML = `
+  app.innerHTML = `<div class="home">
     <button class="btn primary big" id="newBtn">+ Nuova sessione</button>
     ${sessions.length ? `<h2 class="section">Sessioni</h2>${list}` : `
       <div class="empty">
@@ -194,8 +197,10 @@ function viewHome() {
         <p class="muted">Crea una sessione, aggiungi i piloti e premi START quando partono. Funziona anche senza segnale: i tempi restano salvati sul telefono.</p>
       </div>`}
     ${sessions.length ? '<p class="muted small center">Tieni premuto su una sessione per condividerla, rinominarla o eliminarla</p>' : ''}
-    ${accountCardHtml()}
-    <p class="footnote">Versione beta · ${auth ? 'dati salvati sul telefono e online' : 'dati salvati solo su questo telefono'}</p>`;
+    <div class="home-bottom">
+      ${accountCardHtml()}
+      <p class="footnote">Versione beta · ${auth ? 'dati salvati sul telefono e online' : 'dati salvati solo su questo telefono'}</p>
+    </div></div>`;
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
   wireAccountCard();
 
@@ -1286,10 +1291,18 @@ async function sbFetch(path, opts = {}, withUser = true) {
 }
 
 function storeSession(data) {
+  const u = data.user || (auth && auth.user) || {};
+  const meta = u.user_metadata || {};
   saveAuth({
     access_token: data.access_token, refresh_token: data.refresh_token,
     expires_at: Date.now() + (data.expires_in || 3600) * 1000,
-    user: { id: data.user.id, email: data.user.email },
+    user: {
+      id: u.id, email: u.email,
+      name: meta.full_name || meta.name || (auth && auth.user && auth.user.name) || null,
+      avatar: meta.avatar_url || meta.picture || (auth && auth.user && auth.user.avatar) || null,
+      username: meta.username || (auth && auth.user && auth.user.username) || null,
+    },
+    profile: (auth && auth.user && auth.user.id === u.id && auth.profile) || null,
   });
 }
 
@@ -1307,15 +1320,103 @@ async function ensureToken() {
   }
 }
 
-// indirizzo dell'app, dove riporta il link nell'email (va autorizzato in Supabase > URL Configuration)
+// indirizzo dell'app, dove riportano Google e i link nelle email (autorizzato in Supabase > URL Configuration)
 function appUrl() { return location.origin + location.pathname; }
 
-async function sendCode(email) {
-  await sbFetch('/auth/v1/otp?redirect_to=' + encodeURIComponent(appUrl()),
-    { method: 'POST', body: JSON.stringify({ email, create_user: true }) }, false);
+/* --- registrazione e accesso con email e password --- */
+
+async function signUpEmail(username, email, password) {
+  const data = await sbFetch('/auth/v1/signup?redirect_to=' + encodeURIComponent(appUrl()), {
+    method: 'POST', body: JSON.stringify({ email, password, data: { username } }) }, false);
+  if (!data || !data.access_token) return false;   // serve la conferma via email
+  storeSession(data);
+  return true;
 }
 
-// ritorno dal link nell'email: Supabase riapre l'app con #access_token=...&refresh_token=...
+async function signInEmail(email, password) {
+  const data = await sbFetch('/auth/v1/token?grant_type=password', {
+    method: 'POST', body: JSON.stringify({ email, password }) }, false);
+  storeSession(data);
+}
+
+async function sendPasswordReset(email) {
+  await sbFetch('/auth/v1/recover?redirect_to=' + encodeURIComponent(appUrl()), {
+    method: 'POST', body: JSON.stringify({ email }) }, false);
+}
+
+/* --- Google ---
+   Strada principale: il pulsante ufficiale di Google (Google Identity Services) dà un "id_token"
+   senza lasciare l'app, quindi nessuna pagina di accesso resta nella cronologia (tasto indietro).
+   Se lo script di Google non si carica: passaggio dalla pagina di Google con ritorno #access_token=... */
+
+const GOOGLE_CLIENT_ID = '119615516276-0mte5fajfe55t5ek3gfrvqggsnmb9jfg.apps.googleusercontent.com';
+let gisPromise = null, gisNonce = null, gisReady = false;
+
+function loadGis() {
+  if (window.google && google.accounts && google.accounts.id) return Promise.resolve();
+  if (gisPromise) return gisPromise;
+  gisPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
+    const t = setTimeout(() => reject(new Error('timeout')), 6000);
+    s.onload = () => { clearTimeout(t); window.google && google.accounts ? resolve() : reject(new Error('gis')); };
+    s.onerror = () => { clearTimeout(t); reject(new Error('gis')); };
+    document.head.appendChild(s);
+  }).catch(e => { gisPromise = null; throw e; });
+  return gisPromise;
+}
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function initGis() {
+  await loadGis();
+  if (gisReady) return;
+  gisNonce = uid();
+  let hashed;
+  try { hashed = await sha256Hex(gisNonce); } catch (_) { gisNonce = null; }
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential, nonce: hashed,
+    auto_select: false, cancel_on_tap_outside: true, use_fedcm_for_prompt: true, context: 'signin', itp_support: true,
+  });
+  gisReady = true;
+}
+
+async function onGoogleCredential(resp) {
+  try {
+    const data = await sbFetch('/auth/v1/token?grant_type=id_token', { method: 'POST',
+      body: JSON.stringify({ provider: 'google', id_token: resp.credential, ...(gisNonce ? { nonce: gisNonce } : {}) }) }, false);
+    storeSession(data);
+    loggedIn();
+  } catch (e) { toast('Accesso con Google non riuscito, riprova'); }
+}
+
+// dentro "box" c'è già il nostro pulsante di riserva: se Google risponde lo sostituisco con quello ufficiale
+function mountGoogleButton(box, oneTap) {
+  const fallback = box.querySelector('[data-x=google]');
+  fallback.onclick = loginWithGoogleRedirect;
+  if (!navigator.onLine) return;
+  initGis().then(() => {
+    if (!box.isConnected) return;
+    const slot = document.createElement('div');
+    slot.className = 'gis-slot';
+    box.appendChild(slot);
+    google.accounts.id.renderButton(slot, { type: 'standard', theme: 'outline', size: 'large', text: 'continue_with',
+      shape: 'rectangular', logo_alignment: 'center', width: Math.min(400, Math.max(200, box.clientWidth || 320)), locale: 'it' });
+    fallback.hidden = true;
+    if (oneTap) { try { google.accounts.id.prompt(); } catch (_) {} }
+  }).catch(() => {});
+}
+
+function loginWithGoogleRedirect() {
+  if (!navigator.onLine) { toast('Serve la connessione a internet'); return; }
+  // replace: la schermata di accesso non resta nella cronologia
+  location.replace(`${SB_URL}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(appUrl())}`);
+}
+
+// ritorno da Google (o dal link "password dimenticata"): #access_token=...&refresh_token=...
 function takeAuthRedirect() {
   const h = location.hash.slice(1);
   if (!/(^|&)(access_token|error_code|error)=/.test(h)) return null;
@@ -1332,9 +1433,8 @@ async function finishAuthRedirect(p) {
     const user = await sbFetch('/auth/v1/user', { headers: { Authorization: 'Bearer ' + p.get('access_token') } }, false);
     storeSession({ access_token: p.get('access_token'), refresh_token: p.get('refresh_token'),
       expires_in: Number(p.get('expires_in')) || 3600, user });
-    afterLogin();
-    toast('Accesso fatto: salvo i tempi online');
-    route(); syncNow().catch(() => {});
+    if (p.get('type') === 'recovery') { afterLogin(); route(); newPasswordModal(); return; }
+    loggedIn();
   } catch (e) { toast('Accesso non riuscito, riprova'); }
 }
 
@@ -1344,15 +1444,84 @@ function afterLogin() {
   if (st.user !== auth.user.id) { st.user = auth.user.id; st.sent = {}; st.deleted = []; st.lastAt = null; saveLocal(); }
 }
 
-async function verifyCode(email, token) {
-  const data = await sbFetch('/auth/v1/verify', { method: 'POST', body: JSON.stringify({ type: 'email', email, token }) }, false);
-  storeSession(data);
+// dopo ogni accesso riuscito: profilo (nome da rider) e primo salvataggio online
+async function loggedIn() {
   afterLogin();
+  closeModal();
+  route();
+  syncNow().catch(() => {});
+  const ok = await ensureProfile().catch(() => true);
+  if (ok) toast(`Ciao ${myName()}! I tuoi tempi si salvano anche online`);
+}
+
+/* --- profilo: nome da rider e avatar (tabella profiles, visibile agli altri rider) --- */
+
+function myName() { return (auth && auth.profile && auth.profile.username) || (auth && auth.user.username) || (auth && auth.user.name) || (auth ? auth.user.email.split('@')[0] : ''); }
+function myAvatar() { return (auth && auth.profile && auth.profile.avatar_url) || (auth && auth.user.avatar) || null; }
+
+function setProfile(p) { if (!auth) return; auth.profile = p; saveAuth(auth); refreshAccountUI(); }
+
+// true = profilo a posto; false = serve scegliere il nome (si apre la finestra)
+async function ensureProfile() {
+  if (!auth) return true;
+  await ensureToken();
+  const rows = await sbFetch(`/rest/v1/profiles?id=eq.${auth.user.id}&select=username,avatar_url`) || [];
+  if (rows[0] && rows[0].username) {
+    const p = rows[0];
+    if (!p.avatar_url && auth.user.avatar) {   // prima volta con Google: prendo la sua foto
+      p.avatar_url = auth.user.avatar;
+      sbFetch(`/rest/v1/profiles?id=eq.${auth.user.id}`, { method: 'PATCH', headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ avatar_url: p.avatar_url }) }).catch(() => {});
+    }
+    setProfile(p);
+    return true;
+  }
+  if (auth.user.username) {   // registrato con email: il nome l'ha già scelto
+    try { await saveProfile({ username: auth.user.username }); return true; } catch (_) { /* nome preso: lo chiedo */ }
+  }
+  usernameModal(true);
+  return false;
+}
+
+async function saveProfile(fields) {
+  await ensureToken();
+  const row = { id: auth.user.id, username: myName(), avatar_url: myAvatar(), ...fields };
+  await sbFetch('/rest/v1/profiles?on_conflict=id', { method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(row) });
+  setProfile({ username: row.username, avatar_url: row.avatar_url });
+}
+
+function validUsername(n) { return /^[\p{L}\p{N} ._-]{3,20}$/u.test(n) && n.trim().length >= 3; }
+
+// foto: ritagliata quadrata e rimpicciolita a 256 px sul telefono, poi caricata in avatars/<id>/avatar.jpg
+function resizeImage(file, size = 256) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const s = Math.min(img.width, img.height), c = document.createElement('canvas');
+      c.width = c.height = size;
+      c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => (b ? resolve(b) : reject(new Error('immagine'))), 'image/jpeg', 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('immagine')); };
+    img.src = url;
+  });
+}
+
+async function uploadAvatar(file) {
+  const blob = await resizeImage(file);
+  await ensureToken();
+  const path = `avatars/${auth.user.id}/avatar.jpg`;
+  await sbFetch('/storage/v1/object/' + path, { method: 'POST',
+    headers: { 'Content-Type': 'image/jpeg', 'x-upsert': 'true', 'cache-control': '3600' }, body: blob });
+  await saveProfile({ avatar_url: `${SB_URL}/storage/v1/object/public/${path}?v=${Date.now()}` });
 }
 
 function logout() {
   const token = auth && auth.access_token;
   if (token) fetchTimeout(SB_URL + '/auth/v1/logout', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + token } }).catch(() => {});
+  try { window.google && google.accounts && google.accounts.id.disableAutoSelect(); } catch (_) {}
   saveAuth(null);
   refreshAccountUI();
 }
@@ -1361,7 +1530,8 @@ function sessionRow(s) {
   return {
     id: s.id, owner: auth.user.id, mode: s.mode === 'mx' ? 'mx' : 'enduro', data: s,
     visibility: s.visibility || 'private', deleted: false,
-    track_name: s.track.name || 'Pista senza nome',   // obbligatorio nel database lat: s.track.lat ?? null, lon: s.track.lon ?? null,
+    track_name: s.track.name || 'Pista senza nome',   // obbligatorio nel database
+    lat: s.track.lat ?? null, lon: s.track.lon ?? null,
     started_at: new Date(s.createdAt).toISOString(), updated_at: new Date().toISOString(),
   };
 }
@@ -1449,18 +1619,42 @@ function forgetDeleted(id) {
 
 /* --- interfaccia account --- */
 
+// avatar: foto se c'è, altrimenti iniziali su un colore fisso per ogni nome
+function avatarHtml(size, cls = '') {
+  const name = myName() || '?';
+  const words = name.trim().split(/\s+/);
+  const initials = (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
+  const hue = parseInt(hashStr(name), 36) % 360;
+  const url = myAvatar();
+  return `<span class="avatar ${cls}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.4)}px;background:hsl(${hue} 45% 42%)">` +
+    `${esc(initials)}${url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}</span>`;
+}
+
+// in alto a destra: "Accedi" oppure avatar + nome
+function renderUserBtn() {
+  const b = document.getElementById('userBtn');
+  if (!b) return;
+  if (!auth) { b.className = 'user-btn login'; b.innerHTML = 'Accedi'; b.setAttribute('aria-label', 'Accedi o registrati'); }
+  else {
+    b.className = 'user-btn';
+    b.innerHTML = `${avatarHtml(30)}<span class="user-name">${esc(myName())}</span>`;
+    b.setAttribute('aria-label', 'Il tuo profilo');
+  }
+  b.onclick = () => (auth ? profileModal() : loginModal());
+}
+
 function accountCardHtml() {
   if (!auth) return `
     <button class="card account-card" id="accountBtn">
       <span class="acc-icon">👥</span>
       <span class="acc-text"><strong>Condividi i tuoi tempi con gli amici</strong>
-        <span class="muted small">e guarda quelli degli altri rider. Accedi: i tempi si salvano anche online.</span></span>
+        <span class="acc-sub">Registrati o accedi: i tempi si salvano anche online e puoi vedere quelli degli altri rider.</span></span>
     </button>`;
   return `
     <button class="card account-card" id="accountBtn">
       <span class="acc-icon on">☁</span>
-      <span class="acc-text"><strong>${esc(auth.user.email)}</strong>
-        <span class="muted small" id="syncLine">${esc(syncLineText())}</span></span>
+      <span class="acc-text"><strong>Salvataggio online</strong>
+        <span class="acc-sub" id="syncLine">${esc(syncLineText())}</span></span>
     </button>`;
 }
 
@@ -1474,38 +1668,38 @@ function syncLineText() {
   return st.lastAt ? 'Tutto salvato online · ' + new Date(st.lastAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : 'Tutto salvato online';
 }
 
+let accountShown = null;   // stato (dentro/fuori) disegnato l'ultima volta in home
 function refreshAccountUI() {
-  const line = document.getElementById('syncLine');
-  if (auth && line) { line.textContent = syncLineText(); return; }
-  // entrato/uscito: ridisegno la scheda account in home
+  renderUserBtn();
+  document.querySelectorAll('#syncLine').forEach(l => { l.textContent = syncLineText(); });
+  // entrato/uscito: ridisegno la home
   const onHome = location.hash === '' || location.hash === '#';
-  if (onHome && document.getElementById('accountBtn') && !!line !== !!auth) route();
+  if (onHome && accountShown !== null && accountShown !== !!auth && !document.querySelector('#modal:not([hidden])')) route();
 }
 
 function wireAccountCard() {
+  accountShown = !!auth;
   const btn = document.getElementById('accountBtn');
-  if (btn) btn.onclick = () => (auth ? accountMenu() : loginModal());
+  if (btn) btn.onclick = () => (auth ? profileModal() : registerModal());
 }
 
 function authErrorText(e) {
   const m = String(e && e.message || '').toLowerCase();
   if (e && e.name === 'AbortError' || !navigator.onLine || m.includes('failed to fetch')) return 'Serve la connessione a internet.';
-  if (e.status === 429 || m.includes('rate limit') || m.includes('seconds')) return 'Troppe richieste: aspetta un minuto e riprova.';
-  if (m.includes('expired') || m.includes('invalid') || e.code === 'otp_expired') return 'Codice sbagliato o scaduto.';
+  if (e.status === 429 || m.includes('rate limit')) return 'Troppe richieste: aspetta un minuto e riprova.';
+  if (m.includes('invalid login credentials')) return 'Email o password sbagliate.';
+  if (m.includes('already registered') || m.includes('already been registered') || e.code === 'user_already_exists') return 'Esiste già un account con questa email: accedi.';
+  if (m.includes('not confirmed')) return 'Prima conferma l\'email: apri il link che ti abbiamo mandato.';
+  if (m.includes('password')) return 'Password troppo debole: almeno 6 caratteri.';
+  if (m.includes('expired') || m.includes('invalid')) return 'Link scaduto o non valido.';
   if (m.includes('email')) return 'Controlla l\'indirizzo email.';
   return 'Qualcosa non ha funzionato. Riprova.';
 }
 
 const GOOGLE_G = `<svg viewBox="0 0 48 48" width="22" height="22" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
 
-function googleBtnHtml() {
-  return `<button class="btn google-btn" data-x="google">${GOOGLE_G}<span>Continua con Google</span></button>`;
-}
-
-// accesso con Google: si passa dalla pagina di Google e si torna all'app con #access_token=...
-function loginWithGoogle() {
-  if (!navigator.onLine) { toast('Serve la connessione a internet'); return; }
-  location.href = `${SB_URL}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(appUrl())}`;
+function googleBoxHtml() {
+  return `<div class="google-box"><button class="btn google-btn" data-x="google">${GOOGLE_G}<span>Continua con Google</span></button></div>`;
 }
 
 const WELCOME_KEY = 'ec.welcome';
@@ -1519,98 +1713,170 @@ function viewWelcome() {
       <img src="icons/icon-192.png" alt="" class="welcome-icon">
       <h2>Benvenuto in Enduro Crono</h2>
       <p class="muted">Cronometra gli allenamenti di enduro e motocross. Funziona anche senza segnale.</p>
-      <p>Accedi per salvare i tempi online, ritrovarli su un altro telefono e condividerli con gli amici.</p>
+      <p>Crea il tuo account per salvare i tempi online, ritrovarli su un altro telefono e condividerli con gli amici.</p>
       <div class="col gap">
-        ${googleBtnHtml()}
-        <button class="btn ghost" data-x="email">Continua con email</button>
+        <button class="btn primary big" data-x="register">Registrati</button>
+        <button class="btn ghost" data-x="login">Ho già un account · Accedi</button>
       </div>
       <button class="link" data-x="skip">Usa senza account</button>
-      <p class="muted small">Senza account i tempi restano solo su questo telefono. Puoi accedere quando vuoi dalla home.</p>
+      <p class="muted small">Senza account i tempi restano solo su questo telefono. Puoi registrarti quando vuoi.</p>
     </div>`;
-  app.querySelector('[data-x=google]').onclick = loginWithGoogle;
-  app.querySelector('[data-x=email]').onclick = () => loginModal();
+  app.querySelector('[data-x=register]').onclick = () => registerModal();
+  app.querySelector('[data-x=login]').onclick = () => loginModal();
   app.querySelector('[data-x=skip]').onclick = () => { setWelcomeSeen(); route(); };
+}
+
+function fieldErr(body, sel) {
+  const err = body.querySelector(sel);
+  body.querySelectorAll('input').forEach(i => i.addEventListener('input', () => { err.hidden = true; }));
+  return msg => { err.textContent = msg; err.hidden = false; };
+}
+
+function busy(btn, on, label) { btn.disabled = on; btn.textContent = label; }
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function registerModal() {
+  openModal(`
+    <h3>Crea il tuo account</h3>
+    ${googleBoxHtml()}
+    <p class="or"><span>oppure con la tua email</span></p>
+    <label class="label" for="regName">Nome da rider</label>
+    <input class="input" id="regName" autocomplete="nickname" maxlength="20" placeholder="Come ti vedranno gli amici">
+    <label class="label" for="regEmail">Email</label>
+    <input class="input" id="regEmail" type="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it">
+    <label class="label" for="regPass">Password</label>
+    <input class="input" id="regPass" type="password" autocomplete="new-password" placeholder="Almeno 6 caratteri">
+    <p class="form-err" id="regErr" hidden></p>
+    <div class="col gap"><button class="btn primary" data-x="create">Crea account</button></div>
+    <button class="link" data-x="tologin">Hai già un account? Accedi</button>`, body => {
+    mountGoogleButton(body.querySelector('.google-box'));
+    const show = fieldErr(body, '#regErr'), btn = body.querySelector('[data-x=create]');
+    body.querySelector('[data-x=tologin]').onclick = () => loginModal();
+    btn.onclick = async () => {
+      const username = body.querySelector('#regName').value.trim();
+      const email = body.querySelector('#regEmail').value.trim().toLowerCase();
+      const password = body.querySelector('#regPass').value;
+      if (!validUsername(username)) return show('Nome da rider: da 3 a 20 caratteri, lettere e numeri.');
+      if (!EMAIL_RE.test(email)) return show('Scrivi un indirizzo email valido.');
+      if (password.length < 6) return show('La password deve avere almeno 6 caratteri.');
+      busy(btn, true, 'Creo l\'account…');
+      try {
+        const taken = await sbFetch(`/rest/v1/profiles?username=ilike.${encodeURIComponent(username.replace(/[%_]/g, '\\$&'))}&select=id`, {}, false);
+        if (taken && taken.length) { busy(btn, false, 'Crea account'); return show('Questo nome da rider è già usato: scegline un altro.'); }
+        if (await signUpEmail(username, email, password)) loggedIn();
+        else openModal(`<h3>Conferma l'email</h3><p>Ti abbiamo scritto a <strong>${esc(email)}</strong>: apri il link per attivare l'account, poi accedi.</p>
+          <div class="col gap"><button class="btn primary" data-x="ok">Ok</button></div>`, b => { b.querySelector('[data-x=ok]').onclick = closeModal; });
+      } catch (e) { busy(btn, false, 'Crea account'); show(authErrorText(e)); }
+    };
+  });
 }
 
 function loginModal(prefill) {
   openModal(`
     <h3>Accedi</h3>
-    <div class="col gap">${googleBtnHtml()}</div>
+    ${googleBoxHtml()}
     <p class="or"><span>oppure con la tua email</span></p>
-    <p class="muted small">Ti mandiamo un link: niente password.</p>
     <label class="label" for="loginEmail">Email</label>
     <input class="input" id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it" value="${esc(prefill || '')}">
+    <label class="label" for="loginPass">Password</label>
+    <input class="input" id="loginPass" type="password" autocomplete="current-password">
     <p class="form-err" id="loginErr" hidden></p>
+    <div class="col gap"><button class="btn primary" data-x="signin">Accedi</button></div>
+    <button class="link" data-x="forgot">Password dimenticata?</button>
+    <button class="link" data-x="toreg">Non hai un account? Registrati</button>`, body => {
+    mountGoogleButton(body.querySelector('.google-box'));
+    const show = fieldErr(body, '#loginErr'), btn = body.querySelector('[data-x=signin]');
+    const emailIn = body.querySelector('#loginEmail');
+    body.querySelector('[data-x=toreg]').onclick = () => registerModal();
+    body.querySelector('[data-x=forgot]').onclick = async () => {
+      const email = emailIn.value.trim().toLowerCase();
+      if (!EMAIL_RE.test(email)) return show('Scrivi prima la tua email, poi tocca "Password dimenticata?".');
+      try { await sendPasswordReset(email); toast('Ti abbiamo mandato un\'email per cambiare la password'); }
+      catch (e) { show(authErrorText(e)); }
+    };
+    btn.onclick = async () => {
+      const email = emailIn.value.trim().toLowerCase(), password = body.querySelector('#loginPass').value;
+      if (!EMAIL_RE.test(email)) return show('Scrivi un indirizzo email valido.');
+      if (!password) return show('Scrivi la password.');
+      busy(btn, true, 'Accesso…');
+      try { await signInEmail(email, password); loggedIn(); }
+      catch (e) { busy(btn, false, 'Accedi'); show(authErrorText(e)); }
+    };
+  });
+}
+
+function newPasswordModal() {
+  openModal(`
+    <h3>Nuova password</h3>
+    <input class="input" id="newPass" type="password" autocomplete="new-password" placeholder="Almeno 6 caratteri">
+    <p class="form-err" id="npErr" hidden></p>
+    <div class="col gap"><button class="btn primary" data-x="ok">Salva password</button></div>`, body => {
+    const show = fieldErr(body, '#npErr'), btn = body.querySelector('[data-x=ok]');
+    btn.onclick = async () => {
+      const password = body.querySelector('#newPass').value;
+      if (password.length < 6) return show('La password deve avere almeno 6 caratteri.');
+      busy(btn, true, 'Salvo…');
+      try { await sbFetch('/auth/v1/user', { method: 'PUT', body: JSON.stringify({ password }) }); closeModal(); toast('Password cambiata'); ensureProfile().catch(() => {}); }
+      catch (e) { busy(btn, false, 'Salva password'); show(authErrorText(e)); }
+    };
+  });
+}
+
+function usernameModal(first) {
+  openModal(`
+    <h3>${first ? 'Scegli il tuo nome da rider' : 'Cambia nome da rider'}</h3>
+    <p class="muted">È il nome che vedranno gli amici accanto ai tuoi tempi.</p>
+    <input class="input" id="uName" maxlength="20" autocomplete="nickname" value="${esc(first ? (auth.user.username || auth.user.name || '') : myName())}">
+    <p class="form-err" id="uErr" hidden></p>
     <div class="row gap">
-      <button class="btn ghost" data-x="no">Annulla</button>
-      <button class="btn primary" data-x="send">Invia link</button>
+      <button class="btn ghost" data-x="no">${first ? 'Più tardi' : 'Annulla'}</button>
+      <button class="btn primary" data-x="ok">Salva</button>
     </div>`, body => {
-    const input = body.querySelector('#loginEmail'), err = body.querySelector('#loginErr'), send = body.querySelector('[data-x=send]');
+    const show = fieldErr(body, '#uErr'), btn = body.querySelector('[data-x=ok]');
     body.querySelector('[data-x=no]').onclick = closeModal;
-    body.querySelector('[data-x=google]').onclick = loginWithGoogle;
-    input.oninput = () => { err.hidden = true; };
-    send.onclick = async () => {
-      const email = input.value.trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { err.textContent = 'Scrivi un indirizzo email valido.'; err.hidden = false; return; }
-      send.disabled = true; send.textContent = 'Invio…';
-      try { await sendCode(email); codeModal(email); }
-      catch (e) { err.textContent = authErrorText(e); err.hidden = false; send.disabled = false; send.textContent = 'Invia link'; }
+    btn.onclick = async () => {
+      const username = body.querySelector('#uName').value.trim();
+      if (!validUsername(username)) return show('Da 3 a 20 caratteri, lettere e numeri.');
+      busy(btn, true, 'Salvo…');
+      try { await saveProfile({ username }); closeModal(); toast(first ? `Ciao ${username}!` : 'Nome cambiato'); }
+      catch (e) {
+        busy(btn, false, 'Salva');
+        show(e.status === 409 || e.code === '23505' ? 'Questo nome è già usato da un altro rider.' : authErrorText(e));
+      }
     };
   });
 }
 
-function codeModal(email) {
+function profileModal() {
   openModal(`
-    <h3>Controlla l'email</h3>
-    <p>Abbiamo scritto a <strong>${esc(email)}</strong>.<br>Apri l'email <strong>da questo telefono</strong> e tocca il link: l'app si riapre con l'accesso fatto.</p>
-    <p class="muted small">Non la trovi? Guarda nello spam. Il link vale una volta sola e scade dopo un'ora.</p>
-    <div id="codeBox" hidden>
-      <input class="input code-input" id="loginCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
+    <div class="profile-head">
+      ${avatarHtml(84, 'big')}
+      <div class="profile-id"><strong>${esc(myName())}</strong><span class="muted small">${esc(auth.user.email || '')}</span></div>
     </div>
-    <p class="form-err" id="codeErr" hidden></p>
     <div class="row gap">
-      <button class="btn ghost" data-x="back">Cambia email</button>
-      <button class="btn primary" data-x="ok">Ok</button>
+      <button class="btn ghost" data-x="photo">Cambia foto</button>
+      <button class="btn ghost" data-x="name">Cambia nome</button>
     </div>
-    <button class="link" data-x="resend">Non è arrivata? Rinvia l'email</button>
-    <button class="link" data-x="havecode">Nell'email c'è un codice?</button>`, body => {
-    const input = body.querySelector('#loginCode'), err = body.querySelector('#codeErr'), ok = body.querySelector('[data-x=ok]');
-    const box = body.querySelector('#codeBox');
-    body.querySelector('[data-x=havecode]').onclick = e => {
-      box.hidden = false; e.target.hidden = true; ok.textContent = 'Accedi'; input.focus();
-    };
-    input.oninput = () => { err.hidden = true; input.value = input.value.replace(/\D/g, ''); };
-    body.querySelector('[data-x=back]').onclick = () => loginModal(email);
-    body.querySelector('[data-x=resend]').onclick = async () => {
-      try { await sendCode(email); toast('Email rinviata'); }
-      catch (e) { err.textContent = authErrorText(e); err.hidden = false; }
-    };
-    ok.onclick = async () => {
-      if (box.hidden) { closeModal(); return; }
-      const code = input.value.trim();
-      if (code.length < 6) { err.textContent = 'Il codice ha almeno 6 cifre.'; err.hidden = false; return; }
-      ok.disabled = true; ok.textContent = 'Verifica…';
-      try {
-        await verifyCode(email, code);
-        closeModal(); toast('Accesso fatto: salvo i tempi online');
-        route(); syncNow().catch(() => {});
-      } catch (e) { err.textContent = authErrorText(e); err.hidden = false; ok.disabled = false; ok.textContent = 'Accedi'; }
-    };
-  });
-}
-
-function accountMenu() {
-  openModal(`
-    <h3>Il tuo account</h3>
-    <p class="muted">${esc(auth.user.email)}</p>
+    <input type="file" id="avatarFile" accept="image/*" hidden>
+    <h4 class="profile-sec">Salvataggio online</h4>
     <p class="small" id="syncLine">${esc(syncLineText())}</p>
-    <p class="muted small">Le sessioni restano sempre anche sul telefono. Quando c'è rete vengono salvate online, visibili solo a te.</p>
+    <p class="muted small">Le sessioni restano sempre anche sul telefono. Quando c'è rete vengono salvate online, per ora visibili solo a te.</p>
     <div class="col gap">
       <button class="btn primary" data-x="sync">Sincronizza ora</button>
       <button class="btn ghost" data-x="out">Esci</button>
       <button class="btn ghost" data-x="close">Chiudi</button>
     </div>`, body => {
     body.querySelector('[data-x=close]').onclick = closeModal;
+    body.querySelector('[data-x=name]').onclick = () => usernameModal(false);
+    const file = body.querySelector('#avatarFile');
+    body.querySelector('[data-x=photo]').onclick = () => file.click();
+    file.onchange = async () => {
+      if (!file.files[0]) return;
+      toast('Carico la foto…');
+      try { await uploadAvatar(file.files[0]); toast('Foto aggiornata'); if (body.isConnected) profileModal(); }
+      catch (e) { toast(navigator.onLine ? 'Foto non caricata, riprova' : 'Serve la connessione a internet'); }
+    };
     body.querySelector('[data-x=sync]').onclick = () => {
       syncNow().then(() => toast('Tutto salvato online'), e => toast(e.message === 'offline' ? 'Senza rete: riprovo appena torna' : 'Invio non riuscito, riprovo più tardi'));
     };
@@ -1640,4 +1906,10 @@ if ('serviceWorker' in navigator) {
 const authRedirect = takeAuthRedirect();   // prima di route(): l'indirizzo contiene i dati del link
 route();
 resolvePending();
-if (authRedirect) finishAuthRedirect(authRedirect); else scheduleSync(1500);
+if (authRedirect) finishAuthRedirect(authRedirect);
+else {
+  scheduleSync(1500);
+  if (auth && !(auth.profile && auth.profile.username) && navigator.onLine) setTimeout(() => ensureProfile().catch(() => {}), 1200);
+}
+// tornando indietro il browser può rimostrare una pagina vecchia (es. schermata di accesso): la ridisegno
+window.addEventListener('pageshow', e => { if (e.persisted) { auth = loadAuth(); route(); } });

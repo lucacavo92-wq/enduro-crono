@@ -286,3 +286,37 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
   background: #fff; color: #1f1f1f; border: 1.5px solid #dadce0; font-size: 17px; }
 .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 18px 0 0; }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+/* barra in alto: BETA accanto al titolo, utente a destra */
+.title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.title-row h1 { min-width: 0; }
+.title-row .beta { flex: none; }
+.user-btn { flex: none; display: flex; align-items: center; gap: 8px; max-width: 46%; border: 0; background: rgba(255,255,255,.14);
+  color: inherit; border-radius: 999px; padding: 3px 12px 3px 3px; font-weight: 700; font-size: 14px; min-height: 36px; }
+.user-btn.login { padding: 7px 14px; border: 1.5px solid rgba(255,255,255,.7); background: transparent; }
+.user-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+body.in-session .user-btn:not(.login) { padding: 3px; }
+body.in-session .user-name { display: none; }
+body.in-session .user-btn.login { display: none; }
+.avatar { position: relative; flex: none; display: grid; place-items: center; border-radius: 50%; overflow: hidden;
+  color: #fff; font-weight: 800; letter-spacing: .02em; box-shadow: 0 0 0 2px rgba(255,255,255,.85); }
+.avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.avatar.big { box-shadow: 0 0 0 3px var(--line); font-size: 32px; }
+
+/* home: riquadro account in fondo alla pagina */
+.home { display: flex; flex-direction: column; min-height: calc(100vh - 110px - env(safe-area-inset-top)); }
+.home-bottom { margin-top: auto; padding-top: 24px; }
+.home-bottom .footnote { margin-top: 12px; }
+.account-card { margin-top: 0; padding: 16px; align-items: flex-start; }
+.account-card .acc-icon { width: 46px; height: 46px; font-size: 22px; }
+.account-card .acc-text strong { white-space: normal; overflow: visible; font-size: 18px; line-height: 1.25; }
+.acc-sub { display: block; margin-top: 4px; font-size: 15px; line-height: 1.35; color: var(--muted); }
+
+/* accesso e profilo */
+.google-box { display: flex; flex-direction: column; align-items: stretch; margin-top: 8px; }
+.gis-slot { display: flex; justify-content: center; min-height: 44px; }
+.profile-head { display: flex; align-items: center; gap: 16px; margin: 4px 0 16px; }
+.profile-id { display: flex; flex-direction: column; min-width: 0; }
+.profile-id strong { font-size: 22px; overflow: hidden; text-overflow: ellipsis; }
+.profile-sec { margin: 22px 0 4px; font-size: 15px; }
+.sheet .link { display: block; }

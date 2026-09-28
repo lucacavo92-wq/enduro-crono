@@ -361,49 +361,109 @@ async def test_realtime(p):
 
 
 class FakeSupabase:
-    """Supabase finto (auth con codice + tabella sessions) per provare la sincronizzazione senza rete."""
+    """Supabase finto (accesso email/password, Google, profili, foto, tabella sessions) per provare tutto senza rete."""
     BASE = 'https://fhiprgjadehxtpispyvr.supabase.co'
-    CODE = '123456'
+    PASSWORD = 'segreta1'
 
     def __init__(self):
-        self.rows = {}          # id -> riga
+        self.rows = {}          # sessioni: id -> riga
         self.calls = []
         self.down = False       # simula rete assente verso Supabase
-        self.otp_redirect = None
+        self.confirm = False    # True = registrazione con conferma via email
+        self.users = {'luca@example.com': {'id': 'user-1', 'password': self.PASSWORD, 'meta': {}}}
+        self.profiles = {'user-1': {'id': 'user-1', 'username': 'Luca', 'avatar_url': None}}
+        self.tokens = {'tok': 'user-1'}
+        self.recover = None; self.new_password = None; self.nonce = None; self.uploads = []
 
     async def attach(self, pg):
         await pg.route(self.BASE + '/**', self.handle)
 
+    def user_by_id(self, uid):
+        for email, u in self.users.items():
+            if u['id'] == uid: return {'id': uid, 'email': email, 'user_metadata': u['meta']}
+
+    def session(self, uid):
+        tok = 'tok' if uid == 'user-1' else 'tok-' + uid
+        self.tokens[tok] = uid
+        return {'access_token': tok, 'refresh_token': 'ref-' + uid, 'expires_in': 3600, 'user': self.user_by_id(uid)}
+
     async def handle(self, route):
-        from urllib.parse import urlparse, parse_qs
+        from urllib.parse import urlparse, parse_qs, unquote
         req = route.request
         u = urlparse(req.url); q = parse_qs(u.query); path = u.path
         self.calls.append((req.method, path))
         if self.down:
             return await route.abort()
         ok = lambda body, status=200: route.fulfill(status=status, content_type='application/json', body=json.dumps(body))
-        body = json.loads(req.post_data) if req.post_data else None
-        if path == '/auth/v1/otp':
-            self.otp_redirect = q.get('redirect_to', [None])[0]
+        try: body = json.loads(req.post_data) if req.post_data else None
+        except Exception: body = None
+        me = self.tokens.get((req.headers.get('authorization') or '')[7:])
+        if path == '/auth/v1/signup':
+            if body['email'] in self.users:
+                return await ok({'code': 422, 'error_code': 'user_already_exists', 'msg': 'User already registered'}, 422)
+            uid = 'user-%d' % (len(self.users) + 1)
+            self.users[body['email']] = {'id': uid, 'password': body['password'], 'meta': body.get('data') or {}}
+            if self.confirm:
+                return await ok(self.user_by_id(uid))
+            return await ok(self.session(uid))
+        if path == '/auth/v1/token':
+            g = q['grant_type'][0]
+            if g == 'password':
+                usr = self.users.get(body['email'])
+                if not usr or usr['password'] != body['password']:
+                    return await ok({'error': 'invalid_grant', 'error_description': 'Invalid login credentials'}, 400)
+                return await ok(self.session(usr['id']))
+            if g == 'id_token':
+                if body.get('id_token') != 'fake-google-jwt':
+                    return await ok({'msg': 'bad id token'}, 400)
+                self.nonce = body.get('nonce')
+                self.users.setdefault('rider@gmail.com', {'id': 'user-g', 'password': None,
+                    'meta': {'full_name': 'Luca Cavo', 'avatar_url': 'https://lh3.googleusercontent.com/foto.jpg'}})
+                return await ok(self.session('user-g'))
+            if g == 'refresh_token':
+                return await ok(self.session(body['refresh_token'][4:]))
+        if path == '/auth/v1/recover':
+            self.recover = (body['email'], q.get('redirect_to', [None])[0])
             return await ok({})
-        if path == '/auth/v1/verify':
-            if body.get('token') != self.CODE:
-                return await ok({'code': 403, 'error_code': 'otp_expired', 'msg': 'Token has expired or is invalid'}, 403)
-            return await ok({'access_token': 'tok', 'refresh_token': 'ref', 'expires_in': 3600,
-                             'user': {'id': 'user-1', 'email': body['email']}})
         if path == '/auth/v1/user':
-            if req.headers.get('authorization') != 'Bearer tok':
-                return await ok({'msg': 'invalid JWT'}, 401)
-            return await ok({'id': 'user-1', 'email': 'luca@example.com'})
+            if not me: return await ok({'msg': 'invalid JWT'}, 401)
+            if req.method == 'PUT':
+                self.new_password = body.get('password'); return await ok(self.user_by_id(me))
+            return await ok(self.user_by_id(me))
         if path == '/auth/v1/logout':
             return await route.fulfill(status=204, body='')
+        if path == '/rest/v1/profiles':
+            if req.method == 'GET':
+                if 'id' in q:
+                    r = self.profiles.get(q['id'][0][3:]); return await ok([r] if r else [])
+                name = unquote(q['username'][0][6:]).replace('\\', '').lower()
+                return await ok([{'id': r['id']} for r in self.profiles.values() if (r['username'] or '').lower() == name])
+            if not me: return await ok({'message': 'JWT'}, 401)
+            if req.method == 'POST':
+                row = body if isinstance(body, dict) else body[0]
+                if row['id'] != me: return await ok({'message': 'RLS'}, 403)
+                if any(r['username'] == row['username'] and r['id'] != me for r in self.profiles.values()):
+                    return await ok({'code': '23505', 'message': 'duplicate key value violates unique constraint "profiles_username_key"'}, 409)
+                self.profiles[me] = {**self.profiles.get(me, {}), **row}
+                return await route.fulfill(status=201, body='')
+            if req.method == 'PATCH':
+                self.profiles.setdefault(me, {'id': me, 'username': None}).update(body)
+                return await route.fulfill(status=204, body='')
+        if path.startswith('/storage/v1/object/public/avatars/'):
+            png = bytes.fromhex('89504e470d0a1a0a0000000d4948445200000001000000010806000000'
+                                '1f15c4890000000d49444154789c6360f8cf00000301010018dd8db0000000'
+                                '0049454e44ae426082')
+            return await route.fulfill(status=200, content_type='image/png', body=png)
+        if path.startswith('/storage/v1/object/avatars/'):
+            if not me or not path.startswith('/storage/v1/object/avatars/%s/' % me): return await ok({'message': 'RLS'}, 403)
+            self.uploads.append((path, req.headers.get('content-type'), len(req.post_data_buffer or b'')))
+            return await ok({'Key': path[len('/storage/v1/object/'):]})
         if path == '/rest/v1/sessions':
-            if req.headers.get('authorization') != 'Bearer tok':
-                return await ok({'message': 'JWT'}, 401)
+            if not me: return await ok({'message': 'JWT'}, 401)
             ids = q['id'][0][4:-1].split(',') if 'id' in q else None
             if req.method == 'GET':
                 sel = q['select'][0].split(',')
-                rows = [r for r in self.rows.values() if ids is None or r['id'] in ids]
+                rows = [r for r in self.rows.values() if (ids is None or r['id'] in ids) and r['owner'] == me]
                 return await ok([{k: r.get(k) for k in sel} for r in rows])
             if req.method == 'POST':
                 for r in body: self.rows[r['id']] = r
@@ -415,11 +475,17 @@ class FakeSupabase:
         return await ok({'message': 'non previsto'}, 404)
 
 
-async def login(pg, email='luca@example.com'):
-    await pg.click('#accountBtn')
-    await pg.fill('#loginEmail', email); await pg.click('[data-x=send]')
-    await pg.click('[data-x=havecode]')
-    await pg.fill('#loginCode', FakeSupabase.CODE); await pg.click('[data-x=ok]')
+# script finto al posto di quello di Google: il suo pulsante restituisce subito un id_token
+FAKE_GIS = """window.google = { accounts: { id: {
+  initialize(o) { window.__gis = o; },
+  renderButton(el) { const b = document.createElement('button'); b.id = 'fakeGis'; b.textContent = 'Google (finto)';
+    b.onclick = () => window.__gis.callback({ credential: 'fake-google-jwt' }); el.appendChild(b); },
+  prompt() { window.__gisPrompt = true; }, disableAutoSelect() {} } } };"""
+
+
+async def login(pg, email='luca@example.com', password=FakeSupabase.PASSWORD):
+    await pg.click('#userBtn')
+    await pg.fill('#loginEmail', email); await pg.fill('#loginPass', password); await pg.click('[data-x=signin]')
     await pg.wait_for_selector('#syncLine')
 
 
@@ -431,31 +497,19 @@ async def test_sync(p):
     pg = await ctx.new_page(); errs = []
     pg.on('pageerror', lambda e: errs.append(str(e)))
     await pg.route('**/api/interpreter', lambda r: r.abort()); await pg.route('**/reverse*', lambda r: r.abort())
+    await pg.route('https://accounts.google.com/**', lambda r: r.abort())
     await sb.attach(pg)
     await pg.goto(URL)
     await create(pg, ['Luca']); await tap(pg, 0); await pg.wait_for_timeout(400); await tap(pg, 0)
     await pg.wait_for_timeout(300)
     check('Senza accesso: nessun dato inviato online', not sb.calls, sb.calls)
     await pg.goto(URL)
-    check('Home: invito ad accedere', 'Condividi i tuoi tempi' in await pg.inner_text('#accountBtn'))
-    # email sbagliata, poi codice sbagliato, poi giusto
-    await pg.click('#accountBtn'); await pg.fill('#loginEmail', 'luca@'); await pg.click('[data-x=send]')
-    check('Email non valida: messaggio di errore', await pg.is_visible('#loginErr'))
-    await pg.fill('#loginEmail', 'Luca@Example.com'); await pg.click('[data-x=send]')
-    await pg.wait_for_selector('[data-x=havecode]')
-    txt = await pg.inner_text('#modalBody')
-    check("Invio email: \"Controlla l'email\", link che riporta all'app", 'tocca il link' in txt and sb.otp_redirect == URL, (txt[:60], sb.otp_redirect))
-    await pg.click('[data-x=havecode]')
-    await pg.fill('#loginCode', '999999'); await pg.click('[data-x=ok]'); await pg.wait_for_timeout(300)
-    err = await pg.inner_text('#codeErr')
-    check('Codice sbagliato: "Codice sbagliato o scaduto"', 'sbagliato' in err, err)
-    await pg.fill('#loginCode', FakeSupabase.CODE); await pg.click('[data-x=ok]')
-    await pg.wait_for_selector('#syncLine'); await pg.wait_for_timeout(800)
-    card = await pg.inner_text('#accountBtn')
-    check('Accesso fatto: la home mostra l\'email', 'luca@example.com' in card, card)
+    check('Home: invito "Condividi i tuoi tempi con gli amici"', 'Condividi i tuoi tempi con gli amici' in await pg.inner_text('#accountBtn'))
+    await login(pg); await pg.wait_for_timeout(800)
+    check('Accesso fatto: in alto a destra il nome utente', 'Luca' in await pg.inner_text('#userBtn'))
     sid = await pg.evaluate('db.sessions[0].id')
     row = sb.rows.get(sid)
-    check('Dopo l\'accesso la sessione già fatta viene inviata', row and row['data']['riders'][0]['runs'][0]['ms'] > 0 and row['owner'] == 'user-1', row and row.get('owner'))
+    check("Dopo l'accesso la sessione già fatta viene inviata", row and row['data']['riders'][0]['runs'][0]['ms'] > 0 and row['owner'] == 'user-1', row and row.get('owner'))
     check('Stato: "Tutto salvato online"', 'Tutto salvato online' in await pg.inner_text('#syncLine'))
     # nuovo tempo: parte da solo dopo qualche secondo
     await pg.goto(URL + '#s/' + sid); await tap(pg, 0); await pg.wait_for_timeout(600); await tap(pg, 0)
@@ -476,6 +530,7 @@ async def test_sync(p):
     await pg.evaluate('syncNow()')
     mx = [r for r in sb.rows.values() if r['mode'] == 'mx']
     check('Motocross: manche e giri salvati online', mx and len(mx[0]['data']['riders'][0]['manches'][0]['laps']) == 3, mx and mx[0]['data']['riders'][0]['manches'])
+    check('Posizione della pista inviata (lat/lon nella riga)', 'lat' in mx[0] and 'lon' in mx[0], list(mx[0].keys()))
     # eliminazione
     await pg.goto(URL); box = await pg.locator('.session-card').first.bounding_box()
     await pg.mouse.move(box['x'] + 40, box['y'] + 30); await pg.mouse.down(); await pg.wait_for_timeout(700); await pg.mouse.up()
@@ -485,15 +540,15 @@ async def test_sync(p):
     check('Nessun errore JavaScript', not errs, errs)
     await b.close()
 
-    # telefono nuovo: dopo l'accesso ritrovo le sessioni
+    # telefono nuovo: ritorno da Google con i dati nell'indirizzo
     b = await p.chromium.launch(); ctx = await b.new_context(); pg2 = await ctx.new_page()
     await pg2.route('**/api/interpreter', lambda r: r.abort()); await sb.attach(pg2)
-    await pg2.goto(URL + '#access_token=tok&expires_at=1&expires_in=3600&refresh_token=ref&token_type=bearer&type=magiclink')
+    await pg2.goto(URL + '#access_token=tok&expires_at=1&expires_in=3600&refresh_token=ref-user-1&token_type=bearer')
     await pg2.wait_for_selector('#syncLine'); await pg2.wait_for_timeout(1000)
-    check("Link nell'email: l'app si apre con l'accesso fatto", 'luca@example.com' in await pg2.inner_text('#accountBtn'))
-    check("Link nell'email: i dati di accesso spariscono dall'indirizzo", 'access_token' not in await pg2.evaluate('location.href'))
+    check("Ritorno da Google: l'app si apre con l'accesso fatto", 'Luca' in await pg2.inner_text('#userBtn'))
+    check("Ritorno da Google: i dati di accesso spariscono dall'indirizzo", 'access_token' not in await pg2.evaluate('location.href'))
     n = await pg2.locator('.session-card').count()
-    check('Telefono nuovo: dopo l\'accesso ritrova le sue sessioni (1, non quella eliminata)', n == 1, n)
+    check("Telefono nuovo: dopo l'accesso ritrova le sue sessioni (1, non quella eliminata)", n == 1, n)
     # eliminata da un altro telefono -> sparisce anche qui
     sb.rows[sid].update({'deleted': True, 'data': None})
     await pg2.evaluate('syncNow()'); await pg2.wait_for_timeout(300)
@@ -507,35 +562,101 @@ async def test_sync(p):
     check('Link scaduto: messaggio chiaro, nessun accesso', 'scaduto' in t and await pg3.evaluate("localStorage.getItem('ec.auth')") is None, t)
     await b3.close()
     # uscita
-    await pg2.click('#accountBtn'); await pg2.click('[data-x=out]'); await pg2.click('[data-x=ok]'); await pg2.wait_for_timeout(300)
-    check('Esci: torna l\'invito ad accedere', 'Condividi i tuoi tempi' in await pg2.inner_text('#accountBtn'))
+    await pg2.click('#userBtn'); await pg2.click('[data-x=out]'); await pg2.click('[data-x=ok]'); await pg2.wait_for_timeout(300)
+    check('Esci: torna "Accedi" in alto e l\'invito in home', (await pg2.inner_text('#userBtn')).strip() == 'Accedi' and 'Condividi' in await pg2.inner_text('#accountBtn'))
     check('Esci: accesso cancellato dal telefono', await pg2.evaluate("localStorage.getItem('ec.auth')") is None)
     await b.close()
 
 
 async def test_welcome(p):
-    print('\nBENVENUTO (PRIMO AVVIO)')
+    print('\nBENVENUTO, REGISTRAZIONE, GOOGLE, PROFILO')
     sb = FakeSupabase()
-    b = await p.chromium.launch(); ctx = await b.new_context(welcome=True); pg = await ctx.new_page()
+    b = await p.chromium.launch(); ctx = await b.new_context(welcome=True, viewport={'width': 390, 'height': 844}); pg = await ctx.new_page()
     errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.route('https://accounts.google.com/**', lambda r: r.abort())   # Google non raggiungibile: pulsante di riserva
     await sb.attach(pg); await pg.goto(URL)
     t = await pg.inner_text('#app')
-    check('Primo avvio: benvenuto con Google, email e "Usa senza account"',
-          'Continua con Google' in t and 'Continua con email' in t and 'Usa senza account' in t, t[:80])
-    # Google: porta alla pagina di accesso di Supabase/Google con ritorno all'app
+    check('Primo avvio: Registrati, "Ho già un account · Accedi", "Usa senza account"',
+          'Registrati' in t and 'Ho già un account' in t and 'Usa senza account' in t, t[:120])
+    check('BETA accanto al titolo', await pg.evaluate("document.getElementById('betaTag').parentElement.classList.contains('title-row') && !document.getElementById('betaTag').hidden"))
+    check('Senza accesso: in alto a destra "Accedi"', (await pg.inner_text('#userBtn')).strip() == 'Accedi')
+    await pg.click('[data-x=register]')
+    t = await pg.inner_text('#modalBody')
+    check('Registrati: Google oppure nome da rider, email e password', 'Continua con Google' in t and 'Nome da rider' in t and 'Password' in t, t[:100])
+    # Google di riserva: si va alla pagina di Google senza lasciare la schermata nella cronologia
     async with pg.expect_request(lambda r: '/auth/v1/authorize' in r.url) as req:
         await pg.click('[data-x=google]')
     u = (await req.value).url
-    check("Continua con Google: apre l'accesso Google con ritorno all'app", 'provider=google' in u and 'redirect_to=http%3A%2F%2Flocalhost%3A8765%2F' in u, u)
-    await pg.goto(URL); await pg.click('[data-x=skip]')
-    check('Usa senza account: si va alla home', await pg.locator('#newBtn').count() == 1)
-    await pg.reload()
-    check('Il benvenuto non ricompare dopo la scelta', await pg.locator('#newBtn').count() == 1)
-    # dopo l'accesso con Google (ritorno con i dati nell'indirizzo) niente benvenuto
-    ctx2 = await b.new_context(welcome=True); pg2 = await ctx2.new_page(); await sb.attach(pg2)
-    await pg2.goto(URL + '#access_token=tok&expires_in=3600&refresh_token=ref&token_type=bearer')
-    await pg2.wait_for_selector('#syncLine')
-    check('Ritorno da Google: accesso fatto, dritto in home', await pg2.locator('#newBtn').count() == 1)
+    check("Google (riserva): accesso Google con ritorno all'app", 'provider=google' in u and 'redirect_to=http%3A%2F%2Flocalhost%3A8765%2F' in u, u)
+    await pg.goto(URL); await pg.click('[data-x=register]')
+    async def reg(name, email, pw):
+        await pg.fill('#regName', name); await pg.fill('#regEmail', email); await pg.fill('#regPass', pw)
+        await pg.click('[data-x=create]'); await pg.wait_for_timeout(300)
+        return await pg.inner_text('#regErr') if await pg.is_visible('#regErr') else ''
+    e = await reg('Lu', 'marta@example.com', 'segreta1')
+    check('Nome troppo corto: errore', '3 a 20' in e, e)
+    e = await reg('luca', 'marta@example.com', 'segreta1')
+    check('Nome già usato da un altro rider: errore', 'già usato' in e, e)
+    e = await reg('Marta', 'marta@example.com', '123')
+    check('Password corta: errore', '6 caratteri' in e, e)
+    e = await reg('Marta', 'luca@example.com', 'segreta1')
+    check('Email già registrata: "accedi"', 'accedi' in e, e)
+    await reg('Marta', 'marta@example.com', 'segreta1')
+    await pg.wait_for_selector('#syncLine')
+    check('Registrazione fatta: nome in alto a destra', 'Marta' in await pg.inner_text('#userBtn'))
+    check('Profilo creato online con il nome da rider', sb.profiles.get('user-2', {}).get('username') == 'Marta', sb.profiles.get('user-2'))
+    check('Avatar con le iniziali (senza foto)', (await pg.inner_text('#userBtn .avatar')).strip() == 'MA')
+    # riquadro in fondo alla home, testo leggibile per intero
+    await pg.click('#userBtn'); await pg.click('[data-x=out]'); await pg.click('[data-x=ok]'); await pg.wait_for_timeout(300)
+    geo = await pg.evaluate("""(() => { const c = document.getElementById('accountBtn').getBoundingClientRect();
+      const s = document.querySelector('#accountBtn strong'); return [c.bottom / innerHeight, s.scrollWidth <= s.clientWidth + 1]; })()""")
+    check('Riquadro "Condividi…" in fondo alla pagina e scritta intera', geo[0] > 0.8 and geo[1], geo)
+    # accesso con password, password sbagliata, password dimenticata
+    await pg.click('#userBtn'); await pg.fill('#loginEmail', 'marta@example.com'); await pg.fill('#loginPass', 'sbagliata')
+    await pg.click('[data-x=signin]'); await pg.wait_for_timeout(300)
+    check('Password sbagliata: "Email o password sbagliate"', 'sbagliate' in await pg.inner_text('#loginErr'))
+    await pg.click('[data-x=forgot]'); await pg.wait_for_timeout(300)
+    check("Password dimenticata: email di recupero con ritorno all'app", sb.recover == ('marta@example.com', URL), sb.recover)
+    await pg.fill('#loginPass', 'segreta1'); await pg.click('[data-x=signin]'); await pg.wait_for_selector('#syncLine')
+    check('Accesso con password: fatto', 'Marta' in await pg.inner_text('#userBtn'))
+    # foto profilo dalla galleria
+    await pg.click('#userBtn')
+    png = bytes.fromhex('89504e470d0a1a0a0000000d49484452000000020000000208020000'
+                        '00fdd49a730000001649444154789c63f8cfc0f09f81e13f03c37f06'
+                        '0600330d05fb2e6b7f5e0000000049454e44ae426082')
+    await pg.set_input_files('#avatarFile', files=[{'name': 'foto.png', 'mimeType': 'image/png', 'buffer': png}])
+    await pg.wait_for_timeout(1500)
+    up = sb.uploads[-1] if sb.uploads else None
+    check('Cambia foto: rimpicciolita e caricata nella propria cartella', up and up[0] == '/storage/v1/object/avatars/user-2/avatar.jpg' and up[1] == 'image/jpeg', up)
+    src = await pg.evaluate("document.querySelector('#userBtn .avatar img')?.src || ''")
+    check('Nuova foto in alto a destra', '/storage/v1/object/public/avatars/user-2/avatar.jpg' in src, src)
+    # ritorno dal link "password dimenticata"
+    ctx3 = await b.new_context(); pg3 = await ctx3.new_page(); await sb.attach(pg3)
+    await pg3.goto(URL + '#access_token=tok-user-2&expires_in=3600&refresh_token=ref-user-2&token_type=bearer&type=recovery')
+    await pg3.wait_for_selector('#newPass'); await pg3.fill('#newPass', 'nuova123'); await pg3.click('[data-x=ok]'); await pg3.wait_for_timeout(300)
+    check('Link "password dimenticata": si sceglie la nuova password', sb.new_password == 'nuova123', sb.new_password)
+    check('Nessun errore JavaScript', not errs, errs)
+    await b.close()
+
+    # Google con il pulsante ufficiale (script finto): nessuna pagina esterna, nome da scegliere
+    b = await p.chromium.launch(); ctx = await b.new_context(welcome=True); pg = await ctx.new_page()
+    errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.route('https://accounts.google.com/gsi/client', lambda r: r.fulfill(status=200, content_type='text/javascript', body=FAKE_GIS))
+    await sb.attach(pg); await pg.goto(URL)
+    h0 = await pg.evaluate('history.length')
+    await pg.click('[data-x=register]'); await pg.wait_for_selector('#fakeGis')
+    check('Pulsante ufficiale di Google al posto di quello di riserva', await pg.locator('[data-x=google]').is_hidden())
+    await pg.click('#fakeGis'); await pg.wait_for_selector('#uName')
+    check('Google: accesso con id_token e codice di controllo (nonce)', bool(sb.nonce), sb.nonce)
+    check('Google, prima volta: si sceglie il nome, proposto dal nome Google', await pg.input_value('#uName') == 'Luca Cavo')
+    await pg.fill('#uName', 'Luca'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(300)
+    check('Nome già preso: errore', 'già usato' in await pg.inner_text('#uErr'))
+    await pg.fill('#uName', 'LucaMX'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(500)
+    check('Nome salvato e foto di Google come avatar', sb.profiles['user-g']['username'] == 'LucaMX' and 'googleusercontent' in (sb.profiles['user-g']['avatar_url'] or ''), sb.profiles.get('user-g'))
+    check('In alto a destra nome e foto Google', 'LucaMX' in await pg.inner_text('#userBtn') and 'googleusercontent' in await pg.evaluate("document.querySelector('#userBtn img')?.src || ''"))
+    check('Tasto indietro: nessuna pagina di accesso nella cronologia', await pg.evaluate('history.length') == h0, (h0, await pg.evaluate('history.length')))
+    await pg.goto(URL + '#s/nessuna'); await pg.go_back(); await pg.wait_for_timeout(300)
+    check("Indietro dopo l'accesso: la schermata di benvenuto non ricompare", await pg.locator('#newBtn').count() == 1 and await pg.locator('[data-x=register]').count() == 0)
     check('Nessun errore JavaScript', not errs, errs)
     await b.close()
 
