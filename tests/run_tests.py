@@ -588,6 +588,10 @@ async def test_welcome(p):
     t = await pg.inner_text('#app')
     check('Primo avvio: Registrati, "Ho già un account · Accedi", "Usa senza account"',
           'Registrati' in t and 'Ho già un account' in t and 'Usa senza account' in t, t[:120])
+    check('Primo avvio: 3 istruzioni "Come funziona" (sessione, START/GIRO, risultati)',
+          await pg.locator('.welcome .howto li').count() == 3 and 'START' in t and 'GIRO' in t, t[:300])
+    over = await pg.evaluate('document.documentElement.scrollWidth - document.documentElement.clientWidth')
+    check('Benvenuto leggibile sul telefono (niente scorrimento laterale)', over <= 0, over)
     check('BETA accanto al titolo', await pg.evaluate("document.getElementById('betaTag').parentElement.classList.contains('title-row') && !document.getElementById('betaTag').hidden"))
     check('Senza accesso: in alto a destra "Accedi"', (await pg.inner_text('#userBtn')).strip() == 'Accedi')
     await pg.click('[data-x=register]')
@@ -678,6 +682,11 @@ async def test_beta(p):
     errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
     await pg.route('https://accounts.google.com/**', lambda r: r.abort()); await pg.route('**/api/interpreter', lambda r: r.abort())
     await sb.attach(pg); await pg.goto(URL)
+    # "Come funziona" dalla home
+    await pg.click('#howtoBtn')
+    check('Home: "Come funziona" apre le 3 istruzioni', await pg.locator('#modalBody .howto li').count() == 3)
+    await pg.click('#modalBody [data-x=ok]')
+    check('"Ho capito" chiude le istruzioni', await pg.is_hidden('#modal'))
     # commento senza account, poi senza rete (in coda) e al ritorno della rete
     await pg.click('#feedbackBtn'); await pg.click('#modalBody [data-x=ok]')
     check('Commento vuoto: errore', await pg.is_visible('#fbErr'))

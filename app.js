@@ -199,12 +199,14 @@ function viewHome() {
     ${sessions.length ? '<p class="muted small center">Tieni premuto su una sessione per condividerla, rinominarla o eliminarla</p>' : ''}
     <div class="home-bottom">
       ${accountCardHtml()}
+      <button class="link feedback-link" id="howtoBtn">❓ Come funziona</button>
       <button class="link feedback-link" id="feedbackBtn">💬 Invia un commento o segnala un problema</button>
       <p class="footnote">Versione beta · ${auth ? 'dati salvati sul telefono e online' : 'dati salvati solo su questo telefono'}</p>
     </div></div>`;
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
   wireAccountCard();
   document.getElementById('feedbackBtn').onclick = () => feedbackModal();
+  document.getElementById('howtoBtn').onclick = () => howtoModal();
 
   // tieni premuto su una sessione: menu rapido
   app.querySelectorAll('.session-card').forEach(card => {
@@ -1704,6 +1706,21 @@ function googleBoxHtml() {
   return `<div class="google-box"><button class="btn google-btn" data-x="google">${GOOGLE_G}<span>Continua con Google</span></button></div>`;
 }
 
+// "Come funziona": nella schermata di benvenuto e dal link in home
+function howtoHtml() {
+  return `<ol class="howto">
+    <li><b>1</b><div><strong>Crea una sessione</strong><span>Scegli Enduro o Motocross e aggiungi i piloti. La pista la trova da sola col GPS.</span></div></li>
+    <li><b>2</b><div><strong>Cronometra</strong><span>Enduro: <em>START</em> alla partenza, <em>STOP</em> all'arrivo. Motocross: <em>GIRO</em> a ogni passaggio. La <em>X</em> annulla o chiude.</span></div></li>
+    <li><b>3</b><div><strong>Guarda i risultati</strong><span>Tempi, classifica e grafico dei giri. Tieni premuto su una sessione per condividerla.</span></div></li>
+  </ol>`;
+}
+function howtoModal() {
+  openModal(`<h3>Come funziona</h3>${howtoHtml()}
+    <p class="muted small">Funziona anche senza segnale: i tempi restano sul telefono.</p>
+    <div class="col gap"><button class="btn primary" data-x="ok">Ho capito</button></div>`,
+    body => { body.querySelector('[data-x=ok]').onclick = closeModal; });
+}
+
 const WELCOME_KEY = 'ec.welcome';
 function welcomeSeen() { try { return !!localStorage.getItem(WELCOME_KEY); } catch (_) { return true; } }
 function setWelcomeSeen() { try { localStorage.setItem(WELCOME_KEY, '1'); } catch (_) {} }
@@ -1715,6 +1732,7 @@ function viewWelcome() {
       <img src="icons/icon-192.png" alt="" class="welcome-icon">
       <h2>Benvenuto in Enduro Crono</h2>
       <p class="muted">Cronometra gli allenamenti di enduro e motocross. Funziona anche senza segnale.</p>
+      ${howtoHtml()}
       <p>Crea il tuo account per salvare i tempi online, ritrovarli su un altro telefono e condividerli con gli amici.</p>
       <div class="col gap">
         <button class="btn primary big" data-x="register">Registrati</button>
@@ -1900,7 +1918,7 @@ function profileModal() {
 
 /* --- commenti dei tester: salvati in coda sul telefono, inviati appena c'è rete --- */
 
-const APP_VERSION = 'ec-v14';   // uguale a CACHE in sw.js
+const APP_VERSION = 'ec-v15';   // uguale a CACHE in sw.js
 const FEEDBACK_KEY = 'ec.feedback';
 
 function feedbackQueue() { try { return JSON.parse(localStorage.getItem(FEEDBACK_KEY)) || []; } catch (_) { return []; } }

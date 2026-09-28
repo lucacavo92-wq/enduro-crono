@@ -281,6 +281,13 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
 .welcome-icon { width: 88px; height: 88px; border-radius: 22px; margin: 8px auto 4px; display: block; }
 .welcome h2 { font-size: 24px; margin: 12px 0 6px; }
 .welcome .col { margin: 22px 0 6px; }
+.howto { list-style: none; padding: 0; margin: 16px 0; text-align: left; display: flex; flex-direction: column; gap: 10px; }
+.howto li { display: flex; gap: 12px; align-items: flex-start; }
+.howto b { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: 15px; }
+.howto div { display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 1.35; }
+.howto strong { font-size: 15px; }
+.howto span { color: var(--muted); }
+.howto em { font-style: normal; font-weight: 700; color: var(--ink); }
 .welcome .link { font-size: 16px; font-weight: 700; color: var(--ink); padding: 14px 0 4px; }
 .google-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%;
   background: #fff; color: #1f1f1f; border: 1.5px solid #dadce0; font-size: 17px; }
