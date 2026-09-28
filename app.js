@@ -1900,7 +1900,7 @@ function profileModal() {
 
 /* --- commenti dei tester: salvati in coda sul telefono, inviati appena c'è rete --- */
 
-const APP_VERSION = 'ec-v13';   // uguale a CACHE in sw.js
+const APP_VERSION = 'ec-v14';   // uguale a CACHE in sw.js
 const FEEDBACK_KEY = 'ec.feedback';
 
 function feedbackQueue() { try { return JSON.parse(localStorage.getItem(FEEDBACK_KEY)) || []; } catch (_) { return []; } }

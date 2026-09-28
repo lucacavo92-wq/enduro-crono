@@ -17,7 +17,7 @@ Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 - `style.css` — stile (colore principale **verde ottanio** `#0d6b5e`, in tema scuro `#10806f`; stesso colore nello sfondo delle icone, tema chiaro/scuro)
 - `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`) **e `APP_VERSION` in app.js allo stesso valore**, altrimenti i telefoni restano sulla versione vecchia.
 - `manifest.webmanifest`, `icons/` — installazione sulla schermata home
-- `privacy.html` — informativa privacy (italiano). Email di contatto: costante `CONTACT_EMAIL` in fondo alla pagina (vuota finché Luca non dà l'email dedicata)
+- `privacy.html` — informativa privacy (italiano). Email di contatto dedicata: `lcr.racing.ge@gmail.com` (costante `CONTACT_EMAIL` in fondo alla pagina)
 - `tests/run_tests.py` — 115 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
 - `supabase/` — SQL già eseguito sul database (tenere come storico, numerati)
 
