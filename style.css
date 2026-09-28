@@ -265,3 +265,13 @@ main { max-width: 640px; margin: 0 auto; padding: 16px; }
   :root { --accent: #10806f; }
   .mx-status.board { color: #f0a54a; }
 }
+
+/* account e sincronizzazione */
+.account-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; margin-top: 24px; font: inherit; color: inherit; }
+.acc-icon { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 20px; background: var(--line); color: var(--muted); }
+.acc-icon.on { background: var(--accent); color: var(--accent-ink); }
+.acc-text { display: flex; flex-direction: column; min-width: 0; }
+.acc-text strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.form-err { color: var(--worst-ink); font-weight: 700; font-size: 14px; margin: 8px 2px 0; }
+.code-input { font-size: 28px; font-weight: 800; letter-spacing: .3em; text-align: center; font-variant-numeric: tabular-nums; margin-top: 12px; }
+.btn:disabled { opacity: .6; }

@@ -1,6 +1,6 @@
 /* Enduro Crono — beta
    Cronometro offline per allenamenti enduro.
-   Tutti i dati restano sul telefono (localStorage). */
+   Tutti i dati restano sul telefono (localStorage); con l'accesso vengono anche salvati online. */
 'use strict';
 
 const STORE_KEY = 'ec.v1';
@@ -31,10 +31,12 @@ function load() {
 
 let db = load();
 
-function save() {
+function saveLocal() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
   catch (e) { toast('Errore di salvataggio: memoria piena?'); }
 }
+// ogni modifica: salva sul telefono e, se c'è l'accesso, invia online poco dopo
+function save() { saveLocal(); scheduleSync(); }
 
 function getSession(id) { return db.sessions.find(s => s.id === id); }
 
@@ -191,8 +193,10 @@ function viewHome() {
         <p class="muted">Crea una sessione, aggiungi i piloti e premi START quando partono. Funziona anche senza segnale: i tempi restano salvati sul telefono.</p>
       </div>`}
     ${sessions.length ? '<p class="muted small center">Tieni premuto su una sessione per condividerla, rinominarla o eliminarla</p>' : ''}
-    <p class="footnote">Versione beta · dati salvati solo su questo telefono</p>`;
+    ${accountCardHtml()}
+    <p class="footnote">Versione beta · ${auth ? 'dati salvati sul telefono e online' : 'dati salvati solo su questo telefono'}</p>`;
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
+  wireAccountCard();
 
   // tieni premuto su una sessione: menu rapido
   app.querySelectorAll('.session-card').forEach(card => {
@@ -754,7 +758,7 @@ function sessionMenu(s) {
     body.querySelector('[data-x=del]').onclick = () => {
       closeModal();
       confirmBox('Eliminare la sessione e tutti i tempi? Non si può annullare.', 'Elimina', () => {
-        db.sessions = db.sessions.filter(x => x.id !== s.id); save();
+        db.sessions = db.sessions.filter(x => x.id !== s.id); forgetDeleted(s.id); save();
         if (location.hash && location.hash !== '#') location.hash = ''; else route();
         toast('Sessione eliminata');
       });
@@ -1232,6 +1236,356 @@ function mxSessionText(s) {
   return lines.join('\n');
 }
 
+/* ---------- ACCOUNT E SINCRONIZZAZIONE (Supabase) ----------
+   Il telefono resta la memoria principale: l'app funziona sempre offline.
+   Con l'accesso fatto, ogni sessione nuova o modificata viene inviata intera
+   (JSON in sessions.data) appena c'è rete. Le sessioni presenti solo online
+   (es. telefono nuovo) vengono scaricate. Chiamate REST dirette, nessuna libreria. */
+
+const SB_URL = 'https://fhiprgjadehxtpispyvr.supabase.co';
+const SB_KEY = 'sb_publishable_whtoYN2-tjeQsTN5YDpHug_awNuDpYn';   // chiave pubblica: protetta dalle regole RLS
+const AUTH_KEY = 'ec.auth';
+const SYNC_DELAY_MS = 4000;
+
+function loadAuth() {
+  try { return JSON.parse(localStorage.getItem(AUTH_KEY)) || null; } catch (_) { return null; }
+}
+let auth = loadAuth();
+function saveAuth(a) {
+  auth = a;
+  try { a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); } catch (_) {}
+}
+
+function syncState() {
+  db.sync ||= { user: null, sent: {}, deleted: [], lastAt: null };
+  return db.sync;
+}
+
+// impronta veloce del contenuto: serve solo a capire se una sessione è cambiata
+function hashStr(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + ':' + str.length;
+}
+function sessionHash(s) { return hashStr(JSON.stringify(s)); }
+
+async function sbFetch(path, opts = {}, withUser = true) {
+  const headers = { apikey: SB_KEY, 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (withUser && auth) headers.Authorization = 'Bearer ' + auth.access_token;
+  const res = await fetchTimeout(SB_URL + path, { ...opts, headers }, 20000);
+  const text = await res.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
+  if (!res.ok) {
+    const err = new Error((body && (body.msg || body.message || body.error_description || body.error)) || ('HTTP ' + res.status));
+    err.status = res.status; err.code = body && (body.error_code || body.code);
+    throw err;
+  }
+  return body;
+}
+
+function storeSession(data) {
+  saveAuth({
+    access_token: data.access_token, refresh_token: data.refresh_token,
+    expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+    user: { id: data.user.id, email: data.user.email },
+  });
+}
+
+async function ensureToken() {
+  if (!auth) throw new Error('non autenticato');
+  if (auth.expires_at - Date.now() > 60000) return;
+  try {
+    const data = await sbFetch('/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST', body: JSON.stringify({ refresh_token: auth.refresh_token }) }, false);
+    storeSession(data);
+  } catch (e) {
+    // accesso scaduto o revocato: si esce, i dati sul telefono restano
+    if (e.status === 400 || e.status === 401) { saveAuth(null); refreshAccountUI(); }
+    throw e;
+  }
+}
+
+// indirizzo dell'app, dove riporta il link nell'email (va autorizzato in Supabase > URL Configuration)
+function appUrl() { return location.origin + location.pathname; }
+
+async function sendCode(email) {
+  await sbFetch('/auth/v1/otp?redirect_to=' + encodeURIComponent(appUrl()),
+    { method: 'POST', body: JSON.stringify({ email, create_user: true }) }, false);
+}
+
+// ritorno dal link nell'email: Supabase riapre l'app con #access_token=...&refresh_token=...
+function takeAuthRedirect() {
+  const h = location.hash.slice(1);
+  if (!/(^|&)(access_token|error_code|error)=/.test(h)) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  return new URLSearchParams(h);
+}
+
+async function finishAuthRedirect(p) {
+  if (!p.get('access_token')) {
+    toast(p.get('error_code') === 'otp_expired' ? 'Link scaduto o già usato: chiedine uno nuovo' : 'Accesso non riuscito, riprova');
+    return;
+  }
+  try {
+    const user = await sbFetch('/auth/v1/user', { headers: { Authorization: 'Bearer ' + p.get('access_token') } }, false);
+    storeSession({ access_token: p.get('access_token'), refresh_token: p.get('refresh_token'),
+      expires_in: Number(p.get('expires_in')) || 3600, user });
+    afterLogin();
+    toast('Accesso fatto: salvo i tempi online');
+    route(); syncNow().catch(() => {});
+  } catch (e) { toast('Accesso non riuscito, riprova'); }
+}
+
+function afterLogin() {
+  const st = syncState();
+  if (st.user !== auth.user.id) { st.user = auth.user.id; st.sent = {}; st.deleted = []; st.lastAt = null; saveLocal(); }
+}
+
+async function verifyCode(email, token) {
+  const data = await sbFetch('/auth/v1/verify', { method: 'POST', body: JSON.stringify({ type: 'email', email, token }) }, false);
+  storeSession(data);
+  afterLogin();
+}
+
+function logout() {
+  const token = auth && auth.access_token;
+  if (token) fetchTimeout(SB_URL + '/auth/v1/logout', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + token } }).catch(() => {});
+  saveAuth(null);
+  refreshAccountUI();
+}
+
+function sessionRow(s) {
+  return {
+    id: s.id, owner: auth.user.id, mode: s.mode === 'mx' ? 'mx' : 'enduro', data: s,
+    visibility: s.visibility || 'private', deleted: false,
+    track_name: s.track.name || 'Pista senza nome',   // obbligatorio nel database lat: s.track.lat ?? null, lon: s.track.lon ?? null,
+    started_at: new Date(s.createdAt).toISOString(), updated_at: new Date().toISOString(),
+  };
+}
+
+function pendingCount() {
+  const st = syncState();
+  return db.sessions.filter(s => st.sent[s.id] !== sessionHash(s)).length + st.deleted.length;
+}
+
+let syncTimer = null, syncing = null, syncError = null;
+function scheduleSync(delay = SYNC_DELAY_MS) {
+  if (!auth) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { syncNow().catch(() => {}); }, delay);
+}
+
+function syncNow() {
+  if (!auth) return Promise.resolve();
+  if (syncing) return syncing.then(() => syncNow());
+  syncing = doSync().then(() => { syncError = null; }, e => { syncError = e; throw e; })
+    .finally(() => { syncing = null; refreshAccountUI(); });
+  refreshAccountUI();
+  return syncing;
+}
+
+async function doSync() {
+  if (!navigator.onLine) throw new Error('offline');
+  await ensureToken();
+  const st = syncState();
+  const uidNow = auth.user.id;
+
+  // 1) scarica: sessioni presenti solo online, ed eliminazioni fatte da un altro telefono
+  // (prima solo l'elenco leggero, poi il contenuto delle sessioni che mancano qui)
+  const list = await sbFetch(`/rest/v1/sessions?select=id,deleted&owner=eq.${uidNow}`) || [];
+  let changed = false;
+  const missing = [];
+  for (const row of list) {
+    const local = getSession(row.id);
+    if (row.deleted) {
+      // eliminata altrove: la tolgo qui solo se non l'ho modificata dopo l'ultimo invio
+      if (local && st.sent[row.id] === sessionHash(local)) { db.sessions = db.sessions.filter(x => x.id !== row.id); changed = true; }
+      delete st.sent[row.id];
+    } else if (!local && !st.deleted.includes(row.id)) missing.push(row.id);
+  }
+  for (let i = 0; i < missing.length; i += 25) {
+    const rows = await sbFetch(`/rest/v1/sessions?select=id,data&id=in.(${missing.slice(i, i + 25).join(',')})`) || [];
+    for (const row of rows) {
+      if (!row.data || row.data.id !== row.id || getSession(row.id)) continue;
+      db.sessions.push(row.data); st.sent[row.id] = sessionHash(row.data); changed = true;
+      if (row.data.track) rememberTrack(row.data.track);
+    }
+  }
+
+  // 2) invia: sessioni nuove o modificate (a blocchi)
+  const toSend = db.sessions.filter(s => st.sent[s.id] !== sessionHash(s));
+  for (let i = 0; i < toSend.length; i += 25) {
+    const chunk = toSend.slice(i, i + 25);
+    const hashes = chunk.map(sessionHash);   // impronta di ciò che parte davvero
+    await sbFetch('/rest/v1/sessions?on_conflict=id', {
+      method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(chunk.map(sessionRow)) });
+    chunk.forEach((s, k) => { st.sent[s.id] = hashes[k]; });
+  }
+
+  // 3) eliminazioni fatte su questo telefono
+  if (st.deleted.length) {
+    const ids = [...st.deleted];
+    await sbFetch(`/rest/v1/sessions?id=in.(${ids.join(',')})&owner=eq.${uidNow}`, {
+      method: 'PATCH', headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ deleted: true, data: null, updated_at: new Date().toISOString() }) });
+    st.deleted = st.deleted.filter(id => !ids.includes(id));
+    ids.forEach(id => delete st.sent[id]);
+  }
+
+  st.lastAt = Date.now();
+  saveLocal();
+  if (changed && (location.hash === '' || location.hash === '#')) route();
+}
+
+function forgetDeleted(id) {
+  const st = syncState();
+  if (auth && st.sent[id] && !st.deleted.includes(id)) st.deleted.push(id);
+  delete st.sent[id];
+}
+
+/* --- interfaccia account --- */
+
+function accountCardHtml() {
+  if (!auth) return `
+    <button class="card account-card" id="accountBtn">
+      <span class="acc-icon">☁</span>
+      <span class="acc-text"><strong>Salva i tempi anche online</strong>
+        <span class="muted small">Accedi con la tua email per non perderli se cambi telefono</span></span>
+    </button>`;
+  return `
+    <button class="card account-card" id="accountBtn">
+      <span class="acc-icon on">☁</span>
+      <span class="acc-text"><strong>${esc(auth.user.email)}</strong>
+        <span class="muted small" id="syncLine">${esc(syncLineText())}</span></span>
+    </button>`;
+}
+
+function syncLineText() {
+  if (syncing) return 'Sincronizzazione in corso…';
+  const n = pendingCount();
+  if (!navigator.onLine) return n ? `Senza rete · ${n} da inviare` : 'Senza rete · tutto già salvato online';
+  if (syncError && n) return `Invio non riuscito · ${n} da inviare, riprovo più tardi`;
+  if (n) return `${n} da inviare`;
+  const st = syncState();
+  return st.lastAt ? 'Tutto salvato online · ' + new Date(st.lastAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : 'Tutto salvato online';
+}
+
+function refreshAccountUI() {
+  const line = document.getElementById('syncLine');
+  if (auth && line) { line.textContent = syncLineText(); return; }
+  // entrato/uscito: ridisegno la scheda account in home
+  const onHome = location.hash === '' || location.hash === '#';
+  if (onHome && document.getElementById('accountBtn') && !!line !== !!auth) route();
+}
+
+function wireAccountCard() {
+  const btn = document.getElementById('accountBtn');
+  if (btn) btn.onclick = () => (auth ? accountMenu() : loginModal());
+}
+
+function authErrorText(e) {
+  const m = String(e && e.message || '').toLowerCase();
+  if (e && e.name === 'AbortError' || !navigator.onLine || m.includes('failed to fetch')) return 'Serve la connessione a internet.';
+  if (e.status === 429 || m.includes('rate limit') || m.includes('seconds')) return 'Troppe richieste: aspetta un minuto e riprova.';
+  if (m.includes('expired') || m.includes('invalid') || e.code === 'otp_expired') return 'Codice sbagliato o scaduto.';
+  if (m.includes('email')) return 'Controlla l\'indirizzo email.';
+  return 'Qualcosa non ha funzionato. Riprova.';
+}
+
+function loginModal(prefill) {
+  openModal(`
+    <h3>Accedi</h3>
+    <p class="muted">Ti mandiamo un link via email. Niente password.</p>
+    <label class="label" for="loginEmail">Email</label>
+    <input class="input" id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it" value="${esc(prefill || '')}">
+    <p class="form-err" id="loginErr" hidden></p>
+    <div class="row gap">
+      <button class="btn ghost" data-x="no">Annulla</button>
+      <button class="btn primary" data-x="send">Invia link</button>
+    </div>`, body => {
+    const input = body.querySelector('#loginEmail'), err = body.querySelector('#loginErr'), send = body.querySelector('[data-x=send]');
+    body.querySelector('[data-x=no]').onclick = closeModal;
+    input.oninput = () => { err.hidden = true; };
+    send.onclick = async () => {
+      const email = input.value.trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { err.textContent = 'Scrivi un indirizzo email valido.'; err.hidden = false; return; }
+      send.disabled = true; send.textContent = 'Invio…';
+      try { await sendCode(email); codeModal(email); }
+      catch (e) { err.textContent = authErrorText(e); err.hidden = false; send.disabled = false; send.textContent = 'Invia link'; }
+    };
+  });
+}
+
+function codeModal(email) {
+  openModal(`
+    <h3>Controlla l'email</h3>
+    <p>Abbiamo scritto a <strong>${esc(email)}</strong>.<br>Apri l'email <strong>da questo telefono</strong> e tocca il link: l'app si riapre con l'accesso fatto.</p>
+    <p class="muted small">Non la trovi? Guarda nello spam. Il link vale una volta sola e scade dopo un'ora.</p>
+    <div id="codeBox" hidden>
+      <input class="input code-input" id="loginCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456">
+    </div>
+    <p class="form-err" id="codeErr" hidden></p>
+    <div class="row gap">
+      <button class="btn ghost" data-x="back">Cambia email</button>
+      <button class="btn primary" data-x="ok">Ok</button>
+    </div>
+    <button class="link" data-x="resend">Non è arrivata? Rinvia l'email</button>
+    <button class="link" data-x="havecode">Nell'email c'è un codice?</button>`, body => {
+    const input = body.querySelector('#loginCode'), err = body.querySelector('#codeErr'), ok = body.querySelector('[data-x=ok]');
+    const box = body.querySelector('#codeBox');
+    body.querySelector('[data-x=havecode]').onclick = e => {
+      box.hidden = false; e.target.hidden = true; ok.textContent = 'Accedi'; input.focus();
+    };
+    input.oninput = () => { err.hidden = true; input.value = input.value.replace(/\D/g, ''); };
+    body.querySelector('[data-x=back]').onclick = () => loginModal(email);
+    body.querySelector('[data-x=resend]').onclick = async () => {
+      try { await sendCode(email); toast('Email rinviata'); }
+      catch (e) { err.textContent = authErrorText(e); err.hidden = false; }
+    };
+    ok.onclick = async () => {
+      if (box.hidden) { closeModal(); return; }
+      const code = input.value.trim();
+      if (code.length < 6) { err.textContent = 'Il codice ha almeno 6 cifre.'; err.hidden = false; return; }
+      ok.disabled = true; ok.textContent = 'Verifica…';
+      try {
+        await verifyCode(email, code);
+        closeModal(); toast('Accesso fatto: salvo i tempi online');
+        route(); syncNow().catch(() => {});
+      } catch (e) { err.textContent = authErrorText(e); err.hidden = false; ok.disabled = false; ok.textContent = 'Accedi'; }
+    };
+  });
+}
+
+function accountMenu() {
+  openModal(`
+    <h3>Il tuo account</h3>
+    <p class="muted">${esc(auth.user.email)}</p>
+    <p class="small" id="syncLine">${esc(syncLineText())}</p>
+    <p class="muted small">Le sessioni restano sempre anche sul telefono. Quando c'è rete vengono salvate online, visibili solo a te.</p>
+    <div class="col gap">
+      <button class="btn primary" data-x="sync">Sincronizza ora</button>
+      <button class="btn ghost" data-x="out">Esci</button>
+      <button class="btn ghost" data-x="close">Chiudi</button>
+    </div>`, body => {
+    body.querySelector('[data-x=close]').onclick = closeModal;
+    body.querySelector('[data-x=sync]').onclick = () => {
+      syncNow().then(() => toast('Tutto salvato online'), e => toast(e.message === 'offline' ? 'Senza rete: riprovo appena torna' : 'Invio non riuscito, riprovo più tardi'));
+    };
+    body.querySelector('[data-x=out]').onclick = () => {
+      closeModal();
+      const n = pendingCount();
+      confirmBox(n ? `Ci sono ${n} sessioni non ancora inviate: restano sul telefono ma non online. Uscire lo stesso?` :
+        'Uscire? Le sessioni restano sul telefono.', 'Esci', () => { logout(); toast('Sei uscito'); }, false);
+    };
+  });
+}
+
+window.addEventListener('online', () => scheduleSync(500));
+window.addEventListener('offline', refreshAccountUI);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(1000); });
+
 /* ---------- avvio ---------- */
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -1242,5 +1596,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+const authRedirect = takeAuthRedirect();   // prima di route(): l'indirizzo contiene i dati del link
 route();
 resolvePending();
+if (authRedirect) finishAuthRedirect(authRedirect); else scheduleSync(1500);

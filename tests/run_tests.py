@@ -350,9 +350,162 @@ async def test_realtime(p):
     await b.close()
 
 
+class FakeSupabase:
+    """Supabase finto (auth con codice + tabella sessions) per provare la sincronizzazione senza rete."""
+    BASE = 'https://fhiprgjadehxtpispyvr.supabase.co'
+    CODE = '123456'
+
+    def __init__(self):
+        self.rows = {}          # id -> riga
+        self.calls = []
+        self.down = False       # simula rete assente verso Supabase
+        self.otp_redirect = None
+
+    async def attach(self, pg):
+        await pg.route(self.BASE + '/**', self.handle)
+
+    async def handle(self, route):
+        from urllib.parse import urlparse, parse_qs
+        req = route.request
+        u = urlparse(req.url); q = parse_qs(u.query); path = u.path
+        self.calls.append((req.method, path))
+        if self.down:
+            return await route.abort()
+        ok = lambda body, status=200: route.fulfill(status=status, content_type='application/json', body=json.dumps(body))
+        body = json.loads(req.post_data) if req.post_data else None
+        if path == '/auth/v1/otp':
+            self.otp_redirect = q.get('redirect_to', [None])[0]
+            return await ok({})
+        if path == '/auth/v1/verify':
+            if body.get('token') != self.CODE:
+                return await ok({'code': 403, 'error_code': 'otp_expired', 'msg': 'Token has expired or is invalid'}, 403)
+            return await ok({'access_token': 'tok', 'refresh_token': 'ref', 'expires_in': 3600,
+                             'user': {'id': 'user-1', 'email': body['email']}})
+        if path == '/auth/v1/user':
+            if req.headers.get('authorization') != 'Bearer tok':
+                return await ok({'msg': 'invalid JWT'}, 401)
+            return await ok({'id': 'user-1', 'email': 'luca@example.com'})
+        if path == '/auth/v1/logout':
+            return await route.fulfill(status=204, body='')
+        if path == '/rest/v1/sessions':
+            if req.headers.get('authorization') != 'Bearer tok':
+                return await ok({'message': 'JWT'}, 401)
+            ids = q['id'][0][4:-1].split(',') if 'id' in q else None
+            if req.method == 'GET':
+                sel = q['select'][0].split(',')
+                rows = [r for r in self.rows.values() if ids is None or r['id'] in ids]
+                return await ok([{k: r.get(k) for k in sel} for r in rows])
+            if req.method == 'POST':
+                for r in body: self.rows[r['id']] = r
+                return await route.fulfill(status=201, body='')
+            if req.method == 'PATCH':
+                for i in ids:
+                    if i in self.rows: self.rows[i].update(body)
+                return await route.fulfill(status=204, body='')
+        return await ok({'message': 'non previsto'}, 404)
+
+
+async def login(pg, email='luca@example.com'):
+    await pg.click('#accountBtn')
+    await pg.fill('#loginEmail', email); await pg.click('[data-x=send]')
+    await pg.click('[data-x=havecode]')
+    await pg.fill('#loginCode', FakeSupabase.CODE); await pg.click('[data-x=ok]')
+    await pg.wait_for_selector('#syncLine')
+
+
+async def test_sync(p):
+    print('\nACCOUNT E SINCRONIZZAZIONE ONLINE')
+    sb = FakeSupabase()
+    b = await p.chromium.launch()
+    ctx = await b.new_context(viewport={'width': 390, 'height': 844})
+    pg = await ctx.new_page(); errs = []
+    pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.route('**/api/interpreter', lambda r: r.abort()); await pg.route('**/reverse*', lambda r: r.abort())
+    await sb.attach(pg)
+    await pg.goto(URL)
+    await create(pg, ['Luca']); await tap(pg, 0); await pg.wait_for_timeout(400); await tap(pg, 0)
+    await pg.wait_for_timeout(300)
+    check('Senza accesso: nessun dato inviato online', not sb.calls, sb.calls)
+    await pg.goto(URL)
+    check('Home: invito ad accedere', 'Salva i tempi anche online' in await pg.inner_text('#accountBtn'))
+    # email sbagliata, poi codice sbagliato, poi giusto
+    await pg.click('#accountBtn'); await pg.fill('#loginEmail', 'luca@'); await pg.click('[data-x=send]')
+    check('Email non valida: messaggio di errore', await pg.is_visible('#loginErr'))
+    await pg.fill('#loginEmail', 'Luca@Example.com'); await pg.click('[data-x=send]')
+    await pg.wait_for_selector('[data-x=havecode]')
+    txt = await pg.inner_text('#modalBody')
+    check("Invio email: \"Controlla l'email\", link che riporta all'app", 'tocca il link' in txt and sb.otp_redirect == URL, (txt[:60], sb.otp_redirect))
+    await pg.click('[data-x=havecode]')
+    await pg.fill('#loginCode', '999999'); await pg.click('[data-x=ok]'); await pg.wait_for_timeout(300)
+    err = await pg.inner_text('#codeErr')
+    check('Codice sbagliato: "Codice sbagliato o scaduto"', 'sbagliato' in err, err)
+    await pg.fill('#loginCode', FakeSupabase.CODE); await pg.click('[data-x=ok]')
+    await pg.wait_for_selector('#syncLine'); await pg.wait_for_timeout(800)
+    card = await pg.inner_text('#accountBtn')
+    check('Accesso fatto: la home mostra l\'email', 'luca@example.com' in card, card)
+    sid = await pg.evaluate('db.sessions[0].id')
+    row = sb.rows.get(sid)
+    check('Dopo l\'accesso la sessione già fatta viene inviata', row and row['data']['riders'][0]['runs'][0]['ms'] > 0 and row['owner'] == 'user-1', row and row.get('owner'))
+    check('Stato: "Tutto salvato online"', 'Tutto salvato online' in await pg.inner_text('#syncLine'))
+    # nuovo tempo: parte da solo dopo qualche secondo
+    await pg.goto(URL + '#s/' + sid); await tap(pg, 0); await pg.wait_for_timeout(600); await tap(pg, 0)
+    await pg.wait_for_timeout(5000)
+    check('Nuovo tempo inviato in automatico (~4 s)', len(sb.rows[sid]['data']['riders'][0]['runs']) == 2, len(sb.rows[sid]['data']['riders'][0]['runs']))
+    # senza rete: resta in coda e parte al ritorno della rete
+    sb.down = True
+    await tap(pg, 0); await pg.wait_for_timeout(600); await tap(pg, 0); await pg.wait_for_timeout(5000)
+    await pg.goto(URL); await pg.wait_for_timeout(300)
+    line = await pg.inner_text('#syncLine')
+    check('Senza rete: "1 da inviare", tempi al sicuro sul telefono', '1 da inviare' in line and len(sb.rows[sid]['data']['riders'][0]['runs']) == 2, line)
+    sb.down = False
+    await pg.evaluate("window.dispatchEvent(new Event('online'))"); await pg.wait_for_timeout(1500)
+    check('Tornata la rete: inviato da solo', len(sb.rows[sid]['data']['riders'][0]['runs']) == 3)
+    # motocross con manche
+    await create(pg, ['Marco'], mode='mx', minutes=1); await tap(pg, 0)
+    for i in range(3): await pg.wait_for_timeout(2100); await tap(pg, 0)
+    await pg.evaluate('syncNow()')
+    mx = [r for r in sb.rows.values() if r['mode'] == 'mx']
+    check('Motocross: manche e giri salvati online', mx and len(mx[0]['data']['riders'][0]['manches'][0]['laps']) == 3, mx and mx[0]['data']['riders'][0]['manches'])
+    # eliminazione
+    await pg.goto(URL); box = await pg.locator('.session-card').first.bounding_box()
+    await pg.mouse.move(box['x'] + 40, box['y'] + 30); await pg.mouse.down(); await pg.wait_for_timeout(700); await pg.mouse.up()
+    await pg.click('[data-x=del]'); await pg.click('[data-x=ok]')
+    await pg.evaluate('syncNow()')
+    check('Sessione eliminata sul telefono: eliminata anche online', sb.rows[mx[0]['id']]['deleted'] is True and sb.rows[mx[0]['id']]['data'] is None)
+    check('Nessun errore JavaScript', not errs, errs)
+    await b.close()
+
+    # telefono nuovo: dopo l'accesso ritrovo le sessioni
+    b = await p.chromium.launch(); ctx = await b.new_context(); pg2 = await ctx.new_page()
+    await pg2.route('**/api/interpreter', lambda r: r.abort()); await sb.attach(pg2)
+    await pg2.goto(URL + '#access_token=tok&expires_at=1&expires_in=3600&refresh_token=ref&token_type=bearer&type=magiclink')
+    await pg2.wait_for_selector('#syncLine'); await pg2.wait_for_timeout(1000)
+    check("Link nell'email: l'app si apre con l'accesso fatto", 'luca@example.com' in await pg2.inner_text('#accountBtn'))
+    check("Link nell'email: i dati di accesso spariscono dall'indirizzo", 'access_token' not in await pg2.evaluate('location.href'))
+    n = await pg2.locator('.session-card').count()
+    check('Telefono nuovo: dopo l\'accesso ritrova le sue sessioni (1, non quella eliminata)', n == 1, n)
+    # eliminata da un altro telefono -> sparisce anche qui
+    sb.rows[sid].update({'deleted': True, 'data': None})
+    await pg2.evaluate('syncNow()'); await pg2.wait_for_timeout(300)
+    n = await pg2.locator('.session-card').count()
+    check('Eliminata da un altro telefono: sparisce anche qui', n == 0, n)
+    # link scaduto
+    b3 = await p.chromium.launch(); pg3 = await (await b3.new_context()).new_page(); await sb.attach(pg3)
+    await pg3.goto(URL + '#error=access_denied&error_code=otp_expired&error_description=Email+link+is+invalid+or+has+expired')
+    await pg3.wait_for_timeout(300)
+    t = await pg3.inner_text('#toast')
+    check('Link scaduto: messaggio chiaro, nessun accesso', 'scaduto' in t and await pg3.evaluate("localStorage.getItem('ec.auth')") is None, t)
+    await b3.close()
+    # uscita
+    await pg2.click('#accountBtn'); await pg2.click('[data-x=out]'); await pg2.click('[data-x=ok]'); await pg2.wait_for_timeout(300)
+    check('Esci: torna l\'invito ad accedere', 'Salva i tempi anche online' in await pg2.inner_text('#accountBtn'))
+    check('Esci: accesso cancellato dal telefono', await pg2.evaluate("localStorage.getItem('ec.auth')") is None)
+    await b.close()
+
+
 async def main():
     async with async_playwright() as p:
-        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime):
+        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime, test_sync):
             try:
                 await t(p)
             except Exception as e:

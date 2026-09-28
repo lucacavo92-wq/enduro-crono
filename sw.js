@@ -1,5 +1,5 @@
 // Service worker: l'app funziona anche senza segnale.
-const CACHE = 'ec-v9';
+const CACHE = 'ec-v10';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png'];
 

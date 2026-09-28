@@ -17,7 +17,8 @@ Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 - `style.css` — stile (colore principale **verde ottanio** `#0d6b5e`, in tema scuro `#10806f`; stesso colore nello sfondo delle icone, tema chiaro/scuro)
 - `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`), altrimenti i telefoni restano sulla versione vecchia.
 - `manifest.webmanifest`, `icons/` — installazione sulla schermata home
-- `tests/run_tests.py` — 55 test automatici (Playwright + Chromium, orologio simulato)
+- `tests/run_tests.py` — 76 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
+- `supabase/` — SQL già eseguito sul database (tenere come storico, numerati)
 
 ## Pubblicazione
 Push su `main` → GitHub Pages pubblica da sola in ~1 minuto (repo `lucacavo92-wq/enduro-crono`, sorgente: branch `main`, cartella root).
@@ -37,7 +38,9 @@ Non coperto dai test: Safari/iPhone, vibrazione, schermo sempre acceso, GPS real
 
 ## Dati (tutto in `localStorage`, chiave `ec.v1`)
 ```
-{ sessions: [...], riderNames: [...], tracks: [{name, lat, lon, lastUsed}], mxDefaults, lastMode }
+{ sessions: [...], riderNames: [...], tracks: [{name, lat, lon, lastUsed}], mxDefaults, lastMode,
+  sync: { user, sent: {sessionId: hash}, deleted: [ids], lastAt } }
+accesso online: chiave separata `ec.auth` = { access_token, refresh_token, expires_at, user:{id,email} }
 sessione: { id, createdAt, mode: 'enduro'|'mx', track: {name, lat, lon, acc, auto, pending, source},
             visibility: 'private', mx?: {free:true} | {manches, durationMs, extraLaps},
             riders: [{ id, name, startedAt, runs:[{id, ms, at}], manches:[...] }] }
@@ -56,13 +59,17 @@ Regole importanti:
 ## Riconoscimento pista (nuova sessione, automatico)
 GPS → piste proprie entro 600 m → piste ufficiali OpenStreetMap (Overpass, raggio **2 km**, la più vicina con nome) → località (Nominatim) → senza rete coordinate, nome risolto al ritorno della rete (`resolvePending`). Un nome scritto a mano non viene mai sovrascritto.
 
-## Supabase (online, non ancora collegato all'app)
+## Supabase (collegato: accesso + sincronizzazione)
 - Progetto `enduro-crono`, id **`fhiprgjadehxtpispyvr`**, regione eu-central-1, piano Free, organizzazione `tuubtxvbnqxsoulhhjql`.
-- Tabelle con RLS: `profiles`, `tracks`, `sessions` (visibility `private|friends|public`), `runs`, `friendships`; funzione `private.are_friends`.
-- Nel connettore Supabase di Claude.ai l'accesso è già autorizzato.
+- Tabelle con RLS: `profiles`, `tracks`, `sessions` (visibility `private|friends|public`), `runs` (non usata per ora), `friendships`; funzione `private.are_friends`.
+- `sessions` ha in più `mode`, `data` (jsonb = sessione intera come in localStorage), `deleted` (eliminazione "morbida"). `owner` → `auth.users`, niente profilo obbligatorio. `track_name` NOT NULL.
+- App: chiamate REST dirette (nessuna libreria), chiave pubblica `sb_publishable_…` in `app.js` (`SB_KEY`). Sezione "ACCOUNT E SINCRONIZZAZIONE" in `app.js`.
+- Sincronizzazione: `save()` → `scheduleSync()` (4 s); invia le sessioni la cui impronta (`sessionHash`) è cambiata; scarica quelle presenti solo online; riprova a rete tornata / app riaperta. Il telefono vince sui conflitti.
+- Accesso con **link nell'email** (magic link, Luca usa Android). Site URL in Supabase = `https://lucacavo92-wq.github.io/enduro-crono/`. Il campo codice c'è ma nascosto: la posta predefinita di Supabase non permette di cambiare i modelli email (serve SMTP proprio) e manda poche email/ora solo agli indirizzi del team.
+- Il connettore Supabase in Claude Code: `execute_sql` per leggere; modifiche alle regole di accesso (policy) le blocca il controllo di sicurezza → farle fare a Luca o chiedere.
 
 ## Prossimi passi
-1. Login (email) e **sincronizzazione** con Supabase: salva sul telefono, invia quando c'è rete; adattare lo schema anche alle manche motocross.
+1. ~~Login e sincronizzazione~~ fatto (2026-09-28). Da fare prima di aprire ad altri: **SMTP proprio** (es. Resend) per email con codice (serve su iPhone) e senza limiti.
 2. Condivisione a scelta dell'utente: privato / amici / tutti; consultare i tempi di altri sulla stessa pista.
 3. Registrazione della **traccia GPS** del percorso e condivisione.
 4. Recupero con conto alla rovescia tra le manche (proposto, non ancora chiesto).
