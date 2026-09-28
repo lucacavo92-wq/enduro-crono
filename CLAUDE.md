@@ -17,7 +17,7 @@ Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 - `style.css` — stile (colore principale **verde ottanio** `#0d6b5e`, in tema scuro `#10806f`; stesso colore nello sfondo delle icone, tema chiaro/scuro)
 - `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`), altrimenti i telefoni restano sulla versione vecchia.
 - `manifest.webmanifest`, `icons/` — installazione sulla schermata home
-- `tests/run_tests.py` — 76 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
+- `tests/run_tests.py` — 82 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
 - `supabase/` — SQL già eseguito sul database (tenere come storico, numerati)
 
 ## Pubblicazione
@@ -65,8 +65,18 @@ GPS → piste proprie entro 600 m → piste ufficiali OpenStreetMap (Overpass, r
 - `sessions` ha in più `mode`, `data` (jsonb = sessione intera come in localStorage), `deleted` (eliminazione "morbida"). `owner` → `auth.users`, niente profilo obbligatorio. `track_name` NOT NULL.
 - App: chiamate REST dirette (nessuna libreria), chiave pubblica `sb_publishable_…` in `app.js` (`SB_KEY`). Sezione "ACCOUNT E SINCRONIZZAZIONE" in `app.js`.
 - Sincronizzazione: `save()` → `scheduleSync()` (4 s); invia le sessioni la cui impronta (`sessionHash`) è cambiata; scarica quelle presenti solo online; riprova a rete tornata / app riaperta. Il telefono vince sui conflitti.
-- Accesso con **link nell'email** (magic link, Luca usa Android). Site URL in Supabase = `https://lucacavo92-wq.github.io/enduro-crono/`. Il campo codice c'è ma nascosto: la posta predefinita di Supabase non permette di cambiare i modelli email (serve SMTP proprio) e manda poche email/ora solo agli indirizzi del team.
+- Primo avvio: schermata di benvenuto (`viewWelcome`, chiave `ec.welcome`): **Continua con Google** / Continua con email / Usa senza account.
+- **Google**: Google Cloud progetto `my-project-1525955660843` ("My Project", account luca.cavo92@gmail.com), client OAuth web "Enduro Crono (Supabase)" `119615516276-0mte5fajfe55t5ek3gfrvqggsnmb9jfg.apps.googleusercontent.com`, redirect `https://fhiprgjadehxtpispyvr.supabase.co/auth/v1/callback`. App Google in **modalità test** (solo utenti di prova): va pubblicata/verificata prima del Play Store. Ci sono 2 client secret, quello vecchio (…RAkQ) non è usato: da disattivare.
+- Email: accesso con **link nell'email** (magic link, Luca usa Android). Site URL in Supabase = `https://lucacavo92-wq.github.io/enduro-crono/`. Il campo codice c'è ma nascosto: la posta predefinita di Supabase non permette di cambiare i modelli email (serve SMTP proprio) e manda poche email/ora solo agli indirizzi del team.
 - Il connettore Supabase in Claude Code: `execute_sql` per leggere; modifiche alle regole di accesso (policy) le blocca il controllo di sicurezza → farle fare a Luca o chiedere.
+
+## Efficienza (token/sessioni) — deciso 28/09/2026
+- **Una sessione, un macro-obiettivo.** Chiuso un capitolo (es. "login e sync"), se il prossimo è un progetto diverso (es. "funzioni social"), aprire una sessione nuova invece di continuare quella vecchia: ogni messaggio in una sessione lunga rilegge tutta la storia precedente.
+- **Questo file è la memoria, non la chat.** Decisioni stabili (schema dati, credenziali/id di servizio, convenzioni) vanno scritte qui appena prese, non lasciate solo nella conversazione.
+- **Piano prima di eseguire** per lavori con molti passaggi: proporre una lista breve e aspettare conferma prima di eseguire tutto, così Luca corregge la direzione con un messaggio invece che a lavoro fatto.
+- **File pesanti fuori dalla chat**: salvare su disco e riferirsi al percorso, non incollarli/descriverli per esteso.
+- Se una richiesta di Luca è in sospeso (es. un "ok" da dare), rispondere a quella prima di procedere oltre.
+- **Segnalare il cambio di sessione.** Quando un capitolo/macro-obiettivo è concluso e il prossimo è chiaramente un argomento diverso, dirlo esplicitamente a Luca (e, se possibile, mandare una notifica push): spiegare che quella parte è chiusa, che lo stato è già scritto in questo file, e proporre di aprire una sessione nuova su questa stessa cartella per il prossimo pezzo. Non aprirla da soli: la crea Luca dall'app.
 
 ## Prossimi passi
 1. ~~Login e sincronizzazione~~ fatto (2026-09-28). Da fare prima di aprire ad altri: **SMTP proprio** (es. Resend) per email con codice (serve su iPhone) e senza limiti.

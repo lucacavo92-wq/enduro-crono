@@ -152,6 +152,7 @@ function route() {
   const h = location.hash.slice(1);
   const [view, id, tab] = h.split('/');
   stopTicker();
+  if (!view && !auth && !welcomeSeen()) return viewWelcome();   // primo avvio
   if (view === 'new') return viewNew();
   if (view === 's' && getSession(id)) return viewSession(id, tab || 'crono');
   return viewHome();
@@ -1338,6 +1339,7 @@ async function finishAuthRedirect(p) {
 }
 
 function afterLogin() {
+  setWelcomeSeen();
   const st = syncState();
   if (st.user !== auth.user.id) { st.user = auth.user.id; st.sent = {}; st.deleted = []; st.lastAt = null; saveLocal(); }
 }
@@ -1450,9 +1452,9 @@ function forgetDeleted(id) {
 function accountCardHtml() {
   if (!auth) return `
     <button class="card account-card" id="accountBtn">
-      <span class="acc-icon">☁</span>
-      <span class="acc-text"><strong>Salva i tempi anche online</strong>
-        <span class="muted small">Accedi con la tua email per non perderli se cambi telefono</span></span>
+      <span class="acc-icon">👥</span>
+      <span class="acc-text"><strong>Condividi i tuoi tempi con gli amici</strong>
+        <span class="muted small">e guarda quelli degli altri rider. Accedi: i tempi si salvano anche online.</span></span>
     </button>`;
   return `
     <button class="card account-card" id="accountBtn">
@@ -1494,10 +1496,48 @@ function authErrorText(e) {
   return 'Qualcosa non ha funzionato. Riprova.';
 }
 
+const GOOGLE_G = `<svg viewBox="0 0 48 48" width="22" height="22" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>`;
+
+function googleBtnHtml() {
+  return `<button class="btn google-btn" data-x="google">${GOOGLE_G}<span>Continua con Google</span></button>`;
+}
+
+// accesso con Google: si passa dalla pagina di Google e si torna all'app con #access_token=...
+function loginWithGoogle() {
+  if (!navigator.onLine) { toast('Serve la connessione a internet'); return; }
+  location.href = `${SB_URL}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(appUrl())}`;
+}
+
+const WELCOME_KEY = 'ec.welcome';
+function welcomeSeen() { try { return !!localStorage.getItem(WELCOME_KEY); } catch (_) { return true; } }
+function setWelcomeSeen() { try { localStorage.setItem(WELCOME_KEY, '1'); } catch (_) {} }
+
+function viewWelcome() {
+  setHeader('Enduro Crono', '', false);
+  app.innerHTML = `
+    <div class="welcome">
+      <img src="icons/icon-192.png" alt="" class="welcome-icon">
+      <h2>Benvenuto in Enduro Crono</h2>
+      <p class="muted">Cronometra gli allenamenti di enduro e motocross. Funziona anche senza segnale.</p>
+      <p>Accedi per salvare i tempi online, ritrovarli su un altro telefono e condividerli con gli amici.</p>
+      <div class="col gap">
+        ${googleBtnHtml()}
+        <button class="btn ghost" data-x="email">Continua con email</button>
+      </div>
+      <button class="link" data-x="skip">Usa senza account</button>
+      <p class="muted small">Senza account i tempi restano solo su questo telefono. Puoi accedere quando vuoi dalla home.</p>
+    </div>`;
+  app.querySelector('[data-x=google]').onclick = loginWithGoogle;
+  app.querySelector('[data-x=email]').onclick = () => loginModal();
+  app.querySelector('[data-x=skip]').onclick = () => { setWelcomeSeen(); route(); };
+}
+
 function loginModal(prefill) {
   openModal(`
     <h3>Accedi</h3>
-    <p class="muted">Ti mandiamo un link via email. Niente password.</p>
+    <div class="col gap">${googleBtnHtml()}</div>
+    <p class="or"><span>oppure con la tua email</span></p>
+    <p class="muted small">Ti mandiamo un link: niente password.</p>
     <label class="label" for="loginEmail">Email</label>
     <input class="input" id="loginEmail" type="email" inputmode="email" autocomplete="email" placeholder="nome@esempio.it" value="${esc(prefill || '')}">
     <p class="form-err" id="loginErr" hidden></p>
@@ -1507,6 +1547,7 @@ function loginModal(prefill) {
     </div>`, body => {
     const input = body.querySelector('#loginEmail'), err = body.querySelector('#loginErr'), send = body.querySelector('[data-x=send]');
     body.querySelector('[data-x=no]').onclick = closeModal;
+    body.querySelector('[data-x=google]').onclick = loginWithGoogle;
     input.oninput = () => { err.hidden = true; };
     send.onclick = async () => {
       const email = input.value.trim().toLowerCase();

@@ -7,6 +7,16 @@ con giri ogni 5-7 secondi in pochi istanti, più un test in tempo reale.
 """
 import asyncio, json, sys, time
 from playwright.async_api import async_playwright
+from playwright.async_api._generated import Browser
+
+# i test partono con la schermata di benvenuto già vista, tranne quelli che la provano (welcome=True)
+_orig_new_context = Browser.new_context
+async def _new_context(self, *a, welcome=False, **kw):
+    ctx = await _orig_new_context(self, *a, **kw)
+    if not welcome:
+        await ctx.add_init_script("try { localStorage.setItem('ec.welcome', '1') } catch (e) {}")
+    return ctx
+Browser.new_context = _new_context
 
 URL = 'http://localhost:8765/'
 T0 = '2026-09-27T10:00:00+02:00'
@@ -427,7 +437,7 @@ async def test_sync(p):
     await pg.wait_for_timeout(300)
     check('Senza accesso: nessun dato inviato online', not sb.calls, sb.calls)
     await pg.goto(URL)
-    check('Home: invito ad accedere', 'Salva i tempi anche online' in await pg.inner_text('#accountBtn'))
+    check('Home: invito ad accedere', 'Condividi i tuoi tempi' in await pg.inner_text('#accountBtn'))
     # email sbagliata, poi codice sbagliato, poi giusto
     await pg.click('#accountBtn'); await pg.fill('#loginEmail', 'luca@'); await pg.click('[data-x=send]')
     check('Email non valida: messaggio di errore', await pg.is_visible('#loginErr'))
@@ -498,14 +508,41 @@ async def test_sync(p):
     await b3.close()
     # uscita
     await pg2.click('#accountBtn'); await pg2.click('[data-x=out]'); await pg2.click('[data-x=ok]'); await pg2.wait_for_timeout(300)
-    check('Esci: torna l\'invito ad accedere', 'Salva i tempi anche online' in await pg2.inner_text('#accountBtn'))
+    check('Esci: torna l\'invito ad accedere', 'Condividi i tuoi tempi' in await pg2.inner_text('#accountBtn'))
     check('Esci: accesso cancellato dal telefono', await pg2.evaluate("localStorage.getItem('ec.auth')") is None)
+    await b.close()
+
+
+async def test_welcome(p):
+    print('\nBENVENUTO (PRIMO AVVIO)')
+    sb = FakeSupabase()
+    b = await p.chromium.launch(); ctx = await b.new_context(welcome=True); pg = await ctx.new_page()
+    errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await sb.attach(pg); await pg.goto(URL)
+    t = await pg.inner_text('#app')
+    check('Primo avvio: benvenuto con Google, email e "Usa senza account"',
+          'Continua con Google' in t and 'Continua con email' in t and 'Usa senza account' in t, t[:80])
+    # Google: porta alla pagina di accesso di Supabase/Google con ritorno all'app
+    async with pg.expect_request(lambda r: '/auth/v1/authorize' in r.url) as req:
+        await pg.click('[data-x=google]')
+    u = (await req.value).url
+    check("Continua con Google: apre l'accesso Google con ritorno all'app", 'provider=google' in u and 'redirect_to=http%3A%2F%2Flocalhost%3A8765%2F' in u, u)
+    await pg.goto(URL); await pg.click('[data-x=skip]')
+    check('Usa senza account: si va alla home', await pg.locator('#newBtn').count() == 1)
+    await pg.reload()
+    check('Il benvenuto non ricompare dopo la scelta', await pg.locator('#newBtn').count() == 1)
+    # dopo l'accesso con Google (ritorno con i dati nell'indirizzo) niente benvenuto
+    ctx2 = await b.new_context(welcome=True); pg2 = await ctx2.new_page(); await sb.attach(pg2)
+    await pg2.goto(URL + '#access_token=tok&expires_in=3600&refresh_token=ref&token_type=bearer')
+    await pg2.wait_for_selector('#syncLine')
+    check('Ritorno da Google: accesso fatto, dritto in home', await pg2.locator('#newBtn').count() == 1)
+    check('Nessun errore JavaScript', not errs, errs)
     await b.close()
 
 
 async def main():
     async with async_playwright() as p:
-        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime, test_sync):
+        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime, test_sync, test_welcome):
             try:
                 await t(p)
             except Exception as e:
