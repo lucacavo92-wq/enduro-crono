@@ -374,6 +374,7 @@ class FakeSupabase:
         self.profiles = {'user-1': {'id': 'user-1', 'username': 'Luca', 'avatar_url': None}}
         self.tokens = {'tok': 'user-1'}
         self.recover = None; self.new_password = None; self.nonce = None; self.uploads = []
+        self.feedback = []; self.deleted_users = []; self.deleted_files = []
 
     async def attach(self, pg):
         await pg.route(self.BASE + '/**', self.handle)
@@ -454,6 +455,15 @@ class FakeSupabase:
                                 '1f15c4890000000d49444154789c6360f8cf00000301010018dd8db0000000'
                                 '0049454e44ae426082')
             return await route.fulfill(status=200, content_type='image/png', body=png)
+        if path == '/rest/v1/feedback' and req.method == 'POST':
+            self.feedback.append({**body, 'user_id': me}); return await route.fulfill(status=201, body='')
+        if path == '/rest/v1/rpc/delete_my_account':
+            if not me: return await ok({'message': 'JWT'}, 401)
+            self.deleted_users.append(me); self.profiles.pop(me, None)
+            for k in [k for k, r in self.rows.items() if r['owner'] == me]: self.rows.pop(k)
+            return await route.fulfill(status=204, body='')
+        if path.startswith('/storage/v1/object/avatars/') and req.method == 'DELETE':
+            self.deleted_files.append(path); return await ok([])
         if path.startswith('/storage/v1/object/avatars/'):
             if not me or not path.startswith('/storage/v1/object/avatars/%s/' % me): return await ok({'message': 'RLS'}, 403)
             self.uploads.append((path, req.headers.get('content-type'), len(req.post_data_buffer or b'')))
@@ -661,9 +671,52 @@ async def test_welcome(p):
     await b.close()
 
 
+async def test_beta(p):
+    print('\nBETA: COMMENTI, ELIMINA ACCOUNT, PRIVACY')
+    sb = FakeSupabase()
+    b = await p.chromium.launch(); ctx = await b.new_context(viewport={'width': 390, 'height': 844}); pg = await ctx.new_page()
+    errs = []; pg.on('pageerror', lambda e: errs.append(str(e)))
+    await pg.route('https://accounts.google.com/**', lambda r: r.abort()); await pg.route('**/api/interpreter', lambda r: r.abort())
+    await sb.attach(pg); await pg.goto(URL)
+    # commento senza account, poi senza rete (in coda) e al ritorno della rete
+    await pg.click('#feedbackBtn'); await pg.click('#modalBody [data-x=ok]')
+    check('Commento vuoto: errore', await pg.is_visible('#fbErr'))
+    await pg.fill('#fbText', 'Il pulsante GIRO è piccolo'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(500)
+    f = sb.feedback[-1] if sb.feedback else {}
+    check('Commento inviato (senza account) con versione app', f.get('message') == 'Il pulsante GIRO è piccolo' and f.get('app_version', '').startswith('ec-v') and f.get('user_id') is None, f)
+    sb.down = True
+    await pg.click('#feedbackBtn'); await pg.fill('#fbText', 'Scritto in pista senza rete'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(500)
+    check('Senza rete: il commento resta in coda sul telefono', len(sb.feedback) == 1 and 'senza rete' in (await pg.evaluate("localStorage.getItem('ec.feedback')") or ''))
+    sb.down = False
+    await pg.evaluate("window.dispatchEvent(new Event('online'))"); await pg.wait_for_timeout(800)
+    check('Tornata la rete: il commento in coda parte da solo', len(sb.feedback) == 2 and await pg.evaluate("localStorage.getItem('ec.feedback')") is None, len(sb.feedback))
+    # privacy raggiungibile e leggibile
+    await pg.goto(URL + 'privacy.html')
+    t = await pg.inner_text('main')
+    check('Pagina privacy: titolare, dati, diritti, elimina account', 'Luca Cavo' in t and 'Elimina il mio account' in t and 'GDPR' in t and 'Francoforte' in t)
+    over = await pg.evaluate('document.documentElement.scrollWidth - document.documentElement.clientWidth')
+    check('Pagina privacy leggibile sul telefono (niente scorrimento laterale)', over <= 0, over)
+    # elimina account: sessione online sparisce, quella sul telefono resta
+    await pg.goto(URL); await create(pg, ['Luca']); await pg.goto(URL)
+    await login(pg); await pg.evaluate('syncNow()')
+    check('Prima: sessione salvata online', len([r for r in sb.rows.values() if r['owner'] == 'user-1']) == 1)
+    await pg.click('#userBtn')
+    check('Profilo: link "Informativa privacy" e "Elimina il mio account"', await pg.locator('#modalBody a[href="privacy.html"]').count() == 1 and await pg.locator('[data-x=delete]').count() == 1)
+    await pg.click('[data-x=delete]'); await pg.click('#modalBody [data-x=ok]')
+    await pg.fill('#delWord', 'si'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(200)
+    check('Senza scrivere ELIMINA non si elimina', not sb.deleted_users and await pg.is_visible('#delErr'))
+    await pg.fill('#delWord', 'elimina'); await pg.click('#modalBody [data-x=ok]'); await pg.wait_for_timeout(600)
+    check('Account eliminato online (profilo, sessioni) e foto tolta', sb.deleted_users == ['user-1'] and 'user-1' not in sb.profiles
+          and not any(r['owner'] == 'user-1' for r in sb.rows.values()) and sb.deleted_files == ['/storage/v1/object/avatars/user-1/avatar.jpg'], (sb.deleted_users, sb.deleted_files))
+    check("Dopo l'eliminazione: fuori dall'account, sessioni sul telefono ancora lì",
+          (await pg.inner_text('#userBtn')).strip() == 'Accedi' and await pg.locator('.session-card').count() == 1 and await pg.evaluate("localStorage.getItem('ec.auth')") is None)
+    check('Nessun errore JavaScript', not errs, errs)
+    await b.close()
+
+
 async def main():
     async with async_playwright() as p:
-        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime, test_sync, test_welcome):
+        for t in (test_enduro, test_mx_manche, test_mx_extra, test_mx_free, test_places, test_offline_and_ui, test_realtime, test_sync, test_welcome, test_beta):
             try:
                 await t(p)
             except Exception as e:

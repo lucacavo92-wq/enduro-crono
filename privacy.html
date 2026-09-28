@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d6b5e">
+  <title>Informativa privacy · Enduro Crono</title>
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .doc { max-width: 680px; margin: 0 auto; padding: 16px 16px 48px; line-height: 1.55; }
+    .doc h2 { font-size: 19px; margin: 28px 0 8px; }
+    .doc p, .doc li { font-size: 16px; }
+    .doc ul { padding-left: 20px; }
+    .doc li { margin: 4px 0; }
+    .doc .upd { color: var(--muted); font-size: 14px; }
+    .doc a { color: var(--accent); text-decoration: underline; }
+    .topbar a { color: inherit; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="icon-btn" href="./" aria-label="Torna all'app">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
+    <div class="title-wrap"><div class="title-row"><h1>Informativa privacy</h1></div></div>
+  </header>
+
+  <main class="doc">
+    <p class="upd">Ultimo aggiornamento: 28 settembre 2026 · versione beta</p>
+
+    <p><strong>Enduro Crono</strong> è un cronometro per allenamenti di enduro e motocross, in versione di prova (beta).
+      È un progetto personale di <strong>Luca Cavo</strong>, che è il titolare del trattamento dei dati.
+      Qui trovi, in parole semplici, quali dati usa l'app, perché e cosa puoi fare.</p>
+
+    <h2>1. Se usi l'app senza account</h2>
+    <p>Tutto resta <strong>solo sul tuo telefono</strong> (sessioni, tempi, nomi dei piloti che scrivi, piste).
+      Nessuno di questi dati viene inviato a noi. Se cancelli i dati del browser o disinstalli l'app, spariscono.</p>
+
+    <h2>2. Se crei un account</h2>
+    <p>Salviamo online, per farti ritrovare i tempi su un altro telefono:</p>
+    <ul>
+      <li><strong>Account:</strong> email, password (conservata in forma cifrata, nessuno può leggerla) oppure l'accesso con Google.</li>
+      <li><strong>Profilo:</strong> nome da rider e foto profilo (quella di Google o una che carichi tu). Nome e foto sono visibili agli altri utenti dell'app.</li>
+      <li><strong>Sessioni:</strong> data, modalità (enduro o motocross), nomi dei piloti che inserisci, tempi e giri, nome e posizione della pista.</li>
+    </ul>
+    <p>Per ora le sessioni online sono <strong>visibili solo a te</strong>. Quando arriverà la condivisione con amici e altri rider,
+      sarai tu a scegliere per ogni sessione se tenerla privata o condividerla.</p>
+    <p>Se con Google accedi, Google ci comunica nome, email e foto del tuo account Google; non riceviamo altro.</p>
+
+    <h2>3. Posizione (GPS)</h2>
+    <p>Quando crei una sessione l'app chiede la posizione <strong>solo per riconoscere la pista</strong> in cui ti trovi.
+      Puoi rifiutare e scrivere il nome a mano. Per trovare il nome, le coordinate vengono inviate a servizi pubblici di
+      OpenStreetMap (Overpass e Nominatim), senza il tuo nome o la tua email. La posizione non viene seguita durante l'allenamento.</p>
+
+    <h2>4. Commenti</h2>
+    <p>Se usi "Invia un commento", salviamo il testo che scrivi, il modello di telefono e browser, la versione dell'app e,
+      se hai fatto l'accesso, il collegamento al tuo account. Servono solo a migliorare l'app.</p>
+
+    <h2>5. Dove sono i dati e chi li tratta per noi</h2>
+    <ul>
+      <li><strong>Supabase</strong> (database e account), server nell'Unione Europea (Francoforte, Germania).</li>
+      <li><strong>GitHub Pages</strong> ospita l'app; come ogni sito, registra dati tecnici di accesso (es. indirizzo IP).</li>
+      <li><strong>Google</strong>, solo se scegli "Continua con Google".</li>
+    </ul>
+    <p>Niente pubblicità, niente profilazione, nessuna vendita dei dati.</p>
+
+    <h2>6. Perché possiamo usare i dati</h2>
+    <p>Per fornirti il servizio che chiedi (account e salvataggio dei tempi) e, per la posizione, sulla base del permesso che dai al telefono.</p>
+
+    <h2>7. Per quanto tempo</h2>
+    <p>Finché tieni l'account. Se lo elimini, profilo, foto e sessioni online vengono cancellati subito.
+      I commenti inviati restano, senza più collegamento al tuo account.</p>
+
+    <h2>8. I tuoi diritti</h2>
+    <p>Puoi vedere, correggere, scaricare o cancellare i tuoi dati e opporti al trattamento (artt. 15–22 del GDPR).</p>
+    <ul>
+      <li><strong>Eliminare tutto:</strong> nell'app tocca il tuo nome in alto a destra → "Elimina il mio account".</li>
+      <li><strong>Altre richieste:</strong> scrivi con "Invia un commento" nell'app<span id="contact"></span>.</li>
+    </ul>
+    <p>Se ritieni che i tuoi dati siano trattati male puoi rivolgerti al Garante per la protezione dei dati personali (garanteprivacy.it).</p>
+
+    <h2>9. Minori</h2>
+    <p>Sotto i 14 anni l'account va creato con il permesso di un genitore.</p>
+
+    <h2>10. Modifiche</h2>
+    <p>Durante la beta questa pagina può cambiare; la data in alto indica l'ultima versione.</p>
+
+    <p><a href="./">← Torna a Enduro Crono</a></p>
+  </main>
+  <script>
+    // email di contatto dedicata: si imposta qui quando è pronta
+    const CONTACT_EMAIL = '';
+    if (CONTACT_EMAIL) document.getElementById('contact').innerHTML =
+      ` oppure all'indirizzo <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a>`;
+  </script>
+</body>
+</html>

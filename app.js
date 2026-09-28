@@ -199,10 +199,12 @@ function viewHome() {
     ${sessions.length ? '<p class="muted small center">Tieni premuto su una sessione per condividerla, rinominarla o eliminarla</p>' : ''}
     <div class="home-bottom">
       ${accountCardHtml()}
+      <button class="link feedback-link" id="feedbackBtn">💬 Invia un commento o segnala un problema</button>
       <p class="footnote">Versione beta · ${auth ? 'dati salvati sul telefono e online' : 'dati salvati solo su questo telefono'}</p>
     </div></div>`;
   document.getElementById('newBtn').onclick = () => { location.hash = 'new'; };
   wireAccountCard();
+  document.getElementById('feedbackBtn').onclick = () => feedbackModal();
 
   // tieni premuto su una sessione: menu rapido
   app.querySelectorAll('.session-card').forEach(card => {
@@ -1720,6 +1722,7 @@ function viewWelcome() {
       </div>
       <button class="link" data-x="skip">Usa senza account</button>
       <p class="muted small">Senza account i tempi restano solo su questo telefono. Puoi registrarti quando vuoi.</p>
+      <a class="link" href="privacy.html">Informativa privacy</a>
     </div>`;
   app.querySelector('[data-x=register]').onclick = () => registerModal();
   app.querySelector('[data-x=login]').onclick = () => loginModal();
@@ -1748,6 +1751,7 @@ function registerModal() {
     <label class="label" for="regPass">Password</label>
     <input class="input" id="regPass" type="password" autocomplete="new-password" placeholder="Almeno 6 caratteri">
     <p class="form-err" id="regErr" hidden></p>
+    <p class="muted small">Creando l'account accetti l'<a href="privacy.html" class="inline-link">informativa privacy</a>.</p>
     <div class="col gap"><button class="btn primary" data-x="create">Crea account</button></div>
     <button class="link" data-x="tologin">Hai già un account? Accedi</button>`, body => {
     mountGoogleButton(body.querySelector('.google-box'));
@@ -1864,10 +1868,15 @@ function profileModal() {
     <p class="muted small">Le sessioni restano sempre anche sul telefono. Quando c'è rete vengono salvate online, per ora visibili solo a te.</p>
     <div class="col gap">
       <button class="btn primary" data-x="sync">Sincronizza ora</button>
+      <button class="btn ghost" data-x="feedback">💬 Invia un commento</button>
       <button class="btn ghost" data-x="out">Esci</button>
       <button class="btn ghost" data-x="close">Chiudi</button>
-    </div>`, body => {
+    </div>
+    <a class="link" href="privacy.html">Informativa privacy</a>
+    <button class="link danger-link" data-x="delete">Elimina il mio account</button>`, body => {
     body.querySelector('[data-x=close]').onclick = closeModal;
+    body.querySelector('[data-x=feedback]').onclick = () => feedbackModal();
+    body.querySelector('[data-x=delete]').onclick = () => deleteAccountFlow();
     body.querySelector('[data-x=name]').onclick = () => usernameModal(false);
     const file = body.querySelector('#avatarFile');
     body.querySelector('[data-x=photo]').onclick = () => file.click();
@@ -1889,7 +1898,92 @@ function profileModal() {
   });
 }
 
-window.addEventListener('online', () => scheduleSync(500));
+/* --- commenti dei tester: salvati in coda sul telefono, inviati appena c'è rete --- */
+
+const APP_VERSION = 'ec-v13';   // uguale a CACHE in sw.js
+const FEEDBACK_KEY = 'ec.feedback';
+
+function feedbackQueue() { try { return JSON.parse(localStorage.getItem(FEEDBACK_KEY)) || []; } catch (_) { return []; } }
+function setFeedbackQueue(q) { try { q.length ? localStorage.setItem(FEEDBACK_KEY, JSON.stringify(q)) : localStorage.removeItem(FEEDBACK_KEY); } catch (_) {} }
+
+let flushingFeedback = false;
+async function flushFeedback() {
+  if (flushingFeedback || !navigator.onLine) return;
+  flushingFeedback = true;
+  try {
+    let q = feedbackQueue();
+    while (q.length) {
+      if (auth) await ensureToken().catch(() => {});
+      await sbFetch('/rest/v1/feedback', { method: 'POST', headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ message: q[0].message, app_version: q[0].version, device: q[0].device, page: q[0].page }) }, !!auth);
+      q = feedbackQueue().slice(1); setFeedbackQueue(q);
+    }
+  } catch (_) { /* riprovo più tardi */ }
+  finally { flushingFeedback = false; }
+}
+
+function feedbackModal() {
+  openModal(`
+    <h3>Invia un commento</h3>
+    <p class="muted">Un problema, un'idea, una cosa che non capisci? Scrivila qui: la leggo io. Se sei in pista senza rete, parte appena torna.</p>
+    <textarea class="input textarea" id="fbText" rows="5" maxlength="4000" placeholder="Es. in motocross il pulsante GIRO è troppo piccolo coi guanti"></textarea>
+    <p class="form-err" id="fbErr" hidden></p>
+    <div class="row gap">
+      <button class="btn ghost" data-x="no">Annulla</button>
+      <button class="btn primary" data-x="ok">Invia</button>
+    </div>`, body => {
+    const show = fieldErr(body, '#fbErr'), text = body.querySelector('#fbText');
+    text.addEventListener('input', () => { body.querySelector('#fbErr').hidden = true; });
+    body.querySelector('[data-x=no]').onclick = closeModal;
+    body.querySelector('[data-x=ok]').onclick = () => {
+      const message = text.value.trim();
+      if (!message) return show('Scrivi qualcosa prima di inviare.');
+      setFeedbackQueue([...feedbackQueue(), { message, version: APP_VERSION, page: location.hash || '#home',
+        device: `${navigator.userAgent.slice(0, 180)} · ${screen.width}x${screen.height}` }]);
+      closeModal();
+      toast(navigator.onLine ? 'Grazie! Commento inviato' : 'Grazie! Lo invio appena torna la rete');
+      flushFeedback();
+    };
+  });
+}
+
+/* --- elimina account (GDPR): foto, poi utente online (profilo e sessioni a cascata); il telefono resta com'è --- */
+
+function deleteAccountFlow() {
+  closeModal();
+  confirmBox('Eliminare il tuo account? Spariscono per sempre il profilo, la foto e le sessioni salvate online. Le sessioni sul telefono restano.',
+    'Continua', () => {
+      openModal(`
+        <h3>Conferma eliminazione</h3>
+        <p>Per sicurezza scrivi <strong>ELIMINA</strong> qui sotto.</p>
+        <input class="input" id="delWord" autocomplete="off" autocapitalize="characters">
+        <p class="form-err" id="delErr" hidden></p>
+        <div class="row gap">
+          <button class="btn ghost" data-x="no">Annulla</button>
+          <button class="btn danger" data-x="ok">Elimina account</button>
+        </div>`, body => {
+        const show = fieldErr(body, '#delErr'), btn = body.querySelector('[data-x=ok]');
+        body.querySelector('[data-x=no]').onclick = closeModal;
+        btn.onclick = async () => {
+          if (body.querySelector('#delWord').value.trim().toUpperCase() !== 'ELIMINA') return show('Scrivi ELIMINA per confermare.');
+          if (!navigator.onLine) return show('Serve la connessione a internet.');
+          busy(btn, true, 'Elimino…');
+          try {
+            await ensureToken();
+            await sbFetch(`/storage/v1/object/avatars/${auth.user.id}/avatar.jpg`, { method: 'DELETE' }).catch(() => {});
+            await sbFetch('/rest/v1/rpc/delete_my_account', { method: 'POST', body: '{}' });
+            saveAuth(null);
+            db.sync = null; saveLocal();
+            try { window.google && google.accounts && google.accounts.id.disableAutoSelect(); } catch (_) {}
+            closeModal(); route();
+            toast('Account eliminato. Le sessioni sul telefono restano.');
+          } catch (e) { busy(btn, false, 'Elimina account'); show('Eliminazione non riuscita, riprova.'); }
+        };
+      });
+    });
+}
+
+window.addEventListener('online', () => { scheduleSync(500); flushFeedback(); });
 window.addEventListener('offline', refreshAccountUI);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(1000); });
 
@@ -1906,6 +2000,7 @@ if ('serviceWorker' in navigator) {
 const authRedirect = takeAuthRedirect();   // prima di route(): l'indirizzo contiene i dati del link
 route();
 resolvePending();
+flushFeedback();
 if (authRedirect) finishAuthRedirect(authRedirect);
 else {
   scheduleSync(1500);

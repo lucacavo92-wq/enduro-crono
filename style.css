@@ -320,3 +320,10 @@ body.in-session .user-btn.login { display: none; }
 .profile-id strong { font-size: 22px; overflow: hidden; text-overflow: ellipsis; }
 .profile-sec { margin: 22px 0 4px; font-size: 15px; }
 .sheet .link { display: block; }
+
+/* commenti, privacy, elimina account */
+.textarea { min-height: 120px; resize: vertical; font-size: 16px; line-height: 1.4; margin-top: 8px; }
+.feedback-link { text-align: center; font-size: 14px; padding: 12px 0 0; margin: 0 auto; }
+.danger-link { color: var(--worst-ink); margin-top: 10px; }
+.inline-link { text-decoration: underline; color: inherit; }
+.sheet a.link { text-align: center; }

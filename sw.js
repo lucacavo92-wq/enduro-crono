@@ -1,7 +1,7 @@
 // Service worker: l'app funziona anche senza segnale.
-const CACHE = 'ec-v12';
+const CACHE = 'ec-v13';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png'];
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-180.png', 'privacy.html'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

@@ -15,9 +15,10 @@ Nessun build, nessuna dipendenza: HTML + CSS + JavaScript puro.
 - `index.html` — guscio della pagina
 - `app.js` — tutta la logica (viste, cronometri, analisi, GPS)
 - `style.css` — stile (colore principale **verde ottanio** `#0d6b5e`, in tema scuro `#10806f`; stesso colore nello sfondo delle icone, tema chiaro/scuro)
-- `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`), altrimenti i telefoni restano sulla versione vecchia.
+- `sw.js` — service worker per l'uso **offline**. **Ad ogni modifica di file incrementa `CACHE`** (`ec-vN`) **e `APP_VERSION` in app.js allo stesso valore**, altrimenti i telefoni restano sulla versione vecchia.
 - `manifest.webmanifest`, `icons/` — installazione sulla schermata home
-- `tests/run_tests.py` — 103 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
+- `privacy.html` — informativa privacy (italiano). Email di contatto: costante `CONTACT_EMAIL` in fondo alla pagina (vuota finché Luca non dà l'email dedicata)
+- `tests/run_tests.py` — 115 test automatici (Playwright + Chromium, orologio simulato, Supabase finto `FakeSupabase`)
 - `supabase/` — SQL già eseguito sul database (tenere come storico, numerati)
 
 ## Pubblicazione
@@ -72,6 +73,9 @@ GPS → piste proprie entro 600 m → piste ufficiali OpenStreetMap (Overpass, r
 - Google: pulsante ufficiale Google Identity Services (`id_token` → `/auth/v1/token?grant_type=id_token`, con nonce): niente pagine esterne nella cronologia (bug del tasto indietro). Se lo script Google non carica: riserva con redirect (`location.replace`).
 - **Google**: Google Cloud progetto `my-project-1525955660843` ("My Project", account luca.cavo92@gmail.com), client OAuth web "Enduro Crono (Supabase)" `119615516276-0mte5fajfe55t5ek3gfrvqggsnmb9jfg.apps.googleusercontent.com`, redirect `https://fhiprgjadehxtpispyvr.supabase.co/auth/v1/callback`. App Google in **modalità test** (solo utenti di prova): va pubblicata/verificata prima del Play Store. Client secret in uso …f04Q; il vecchio …RAkQ è disattivato (non eliminato).
 - Luca usa Android. Conferma email alla registrazione: da tenere **spenta** per la beta (la posta gratuita di Supabase scrive solo agli indirizzi del team); riaccenderla con SMTP proprio. Site URL in Supabase = `https://lucacavo92-wq.github.io/enduro-crono/`. Il campo codice c'è ma nascosto: la posta predefinita di Supabase non permette di cambiare i modelli email (serve SMTP proprio) e manda poche email/ora solo agli indirizzi del team.
+- Commenti dei tester: tabella `feedback` (solo inserimento, anche anonimo; si legge dal pannello o con `execute_sql`). In app: "Invia un commento" in home e nel profilo, coda offline `ec.feedback`.
+- Elimina account: funzione `public.delete_my_account()` (security definer, solo sull'utente che chiama; cascata su profiles/sessions/friendships). L'app prima toglie la foto via Storage API. Avviso del linter "security definer eseguibile" = voluto.
+- Da fare: "Leaked password protection" spenta (avviso linter).
 - Il connettore Supabase in Claude Code: `execute_sql` per leggere; modifiche alle regole di accesso (policy) le blocca il controllo di sicurezza → farle fare a Luca o chiedere.
 
 ## Efficienza (token/sessioni) — deciso 28/09/2026
